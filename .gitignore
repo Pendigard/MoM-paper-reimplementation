@@ -15,3 +15,7 @@ dist/
 # IDE / Editor settings
 .vscode/
 .idea/
+
+logs/*
+
+data/*

@@ -22,10 +22,11 @@ class LinearAttention(nn.Module):
         
         # (b, k, d, d)
         indices_update_exp = indices_update.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, hidden_dim, hidden_dim)
-
+        
         M_kv_to_add = torch.gather(M_kv, 1, indices_update_exp)
 
-        return M.scatter_add_(dim=1, index=indices_update_exp, src=M_kv_to_add)
+        M_new = M.clone()
+        return M_new.scatter_add_(dim=1, index=indices_update_exp, src=M_kv_to_add)
 
 
 class MoM(nn.Module):
@@ -75,8 +76,8 @@ class MoM(nn.Module):
             score_t = torch.softmax(self.W_g(x_t), dim=1)
 
             m_scores, m_indices = torch.topk(score_t, self.k)
-            m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
-            m_indices_update = torch.cat([torch.zeros(batch_size, 1), m_indices], dim=1) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
+            # m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
+            m_indices_update = torch.cat([torch.zeros(batch_size, 1, device=M_t.device, dtype=torch.long), m_indices], dim=1) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
             m_indices_update = m_indices_update.to(device=M_t.device, dtype=torch.long)  
             
             g_t = m_scores / m_scores.sum(dim=1, keepdim=True) # On normalise les scores
@@ -91,7 +92,7 @@ class MoM(nn.Module):
             # On pondère les mémoires par leurs scores g calculés précédemment
             M_weighted = M_to_use * g_t.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.hidden_dim, self.hidden_dim)
 
-            M_out = M_weighted.sum(dim=1) + M_0[:,0,:,:]
+            M_out = M_weighted.sum(dim=1) + M_t[:,0,:,:]
             
             q_t = self.W_q(x_t)
             o_t = q_t.unsqueeze(-2) @ M_out
