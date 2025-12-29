@@ -1,3 +1,6 @@
+import setuptools
+import distutils
+import distutils.version
 import itertools
 import logging
 from tqdm import tqdm

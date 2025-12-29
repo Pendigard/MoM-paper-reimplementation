@@ -25,7 +25,7 @@ class LinearAttention(nn.Module):
         
         M_kv_to_add = torch.gather(M_kv, 1, indices_update_exp)
 
-        M_new = M.clone()
+        M_new = M.clone() * 0.99
         return M_new.scatter_add_(dim=1, index=indices_update_exp, src=M_kv_to_add)
 
 
@@ -57,6 +57,8 @@ class MoM(nn.Module):
         self.W_g = nn.Linear(input_dim, num_memories) # On ne calcule pas de score pour la mémoire partagée
         self.W_q = nn.Linear(input_dim, hidden_dim)
 
+        self.out_norm = nn.LayerNorm(hidden_dim)
+
         self.update_module = update_module
 
         self.softmax = nn.Softmax(dim=-1)
@@ -73,7 +75,9 @@ class MoM(nn.Module):
         M_t = M_0
         outputs = []
         for x_t in X:
-            score_t = torch.softmax(self.W_g(x_t), dim=1)
+            if x_t.dim() == 1:
+                x_t = x_t.unsqueeze(0)
+            score_t = torch.softmax(self.W_g(x_t), dim=-1)
 
             m_scores, m_indices = torch.topk(score_t, self.k)
             # m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
@@ -93,9 +97,11 @@ class MoM(nn.Module):
             M_weighted = M_to_use * g_t.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.hidden_dim, self.hidden_dim)
 
             M_out = M_weighted.sum(dim=1) + M_t[:,0,:,:]
+
+            M_out = self.out_norm(M_out)
             
             q_t = self.W_q(x_t)
             o_t = q_t.unsqueeze(-2) @ M_out
-            outputs.append(o_t.squeeze())
+            outputs.append(o_t.squeeze(1))
 
         return torch.stack(outputs), M_t
