@@ -81,10 +81,13 @@ class MoMLLM(nn.Module):
         return logits
 
 def get_data_loader(tokenizer, config):
-    print(f"Chargement du daatset")
-    dataset = load_dataset(config["dataset_name"], split="train", streaming=True)
-    dataset = dataset.shuffle(seed=42, buffer_size=10000)
-
+    print(f"Chargement du dataset LOCAL (Mode Hors-Ligne)...")
+    
+    local_file = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/example_train_0.jsonl.zst"
+    
+    dataset = load_dataset("json", data_files=local_file, split="train", streaming=False)
+    
+    dataset = dataset.shuffle(seed=42) 
     def tokenize(examples):
         return tokenizer(
             examples["text"],
@@ -93,9 +96,10 @@ def get_data_loader(tokenizer, config):
             padding="max_length"
         )
 
-    dataset = dataset.map(tokenize, remove_columns=["text", "meta", "redpajama_set_name"])
+    dataset = dataset.map(tokenize, batched=True, remove_columns=["text", "meta"])
     dataset = dataset.with_format("torch")
-    dataloader = DataLoader(dataset, batch_size=config["batch_size"])
+    
+    dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
     return dataloader
 
 def train():
@@ -122,7 +126,11 @@ def train():
         try:
             batch = next(data_iter)
         except StopIteration:
+            print("Fin du dataset atteinte.")
             break
+        except Exception as e:
+            print(f"\nFichier corrompu détecté à l'étape {step}. Erreur: {e}")
+            continue
             
         input_ids = batch["input_ids"].to(device)
 
