@@ -80,7 +80,7 @@ class MoM(nn.Module):
             score_t = torch.softmax(self.W_g(x_t), dim=-1)
 
             m_scores, m_indices = torch.topk(score_t, self.k)
-            # m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
+            m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
             m_indices_update = torch.cat([torch.zeros(batch_size, 1, device=M_t.device, dtype=torch.long), m_indices], dim=1) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
             m_indices_update = m_indices_update.to(device=M_t.device, dtype=torch.long)  
             

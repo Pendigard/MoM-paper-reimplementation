@@ -1,6 +1,3 @@
-import setuptools
-import distutils
-import distutils.version
 import itertools
 import logging
 from tqdm import tqdm
@@ -167,20 +164,33 @@ def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, wri
     pbar_epochs.close()
     return model
 
-def compute_score(model, data_test):
+def compute_score(model, data_test, PAD_IX):
     device = next(model.parameters()).device
     model.eval()
-    accuracy = 0.0
+
+    correct_total = 0
+    token_total = 0
+
     with torch.no_grad():
         for batch_x, batch_y in data_test:
             batch_x = batch_x.to(device).long()
+            batch_y = batch_y.to(device).long()
 
-            output = model(batch_x)
-            out = output.permute(0, 2, 1)
-            pred = torch.argmax(out, dim=1)
-            correct = (pred == batch_y).float()
-            accuracy = correct.sum() / correct.numel()
-    return accuracy
+            output = model(batch_x)          # [B, T, C]
+            out = output.permute(0, 2, 1)    # [B, C, T]
+
+            pred = torch.argmax(out, dim=1)  # [B, T]
+
+            # masque : True pour les vrais tokens, False pour le padding
+            mask = batch_y != PAD_IX         # [B, T]
+
+            # comptage correct uniquement sur les vrais tokens
+            correct = (pred == batch_y) & mask
+
+            correct_total += correct.sum().item()
+            token_total += mask.sum().item()
+
+    return correct_total / token_total if token_total > 0 else 0.0
 
 logging.info("Loading datasets...")
 words = Vocabulary(True)
@@ -209,16 +219,35 @@ print("Data loaded.")
 
 PAD_IX = words.PAD
 
+class LSTMPipeline(nn.Module):
+    def __init__(self, input_dim, embedding_dim, hidden_dim, output_dim):
+        super(LSTMPipeline, self).__init__()
+        self.embedding = nn.Embedding(input_dim, embedding_dim, padding_idx=PAD_IX)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)
+
+    def forward(self, x):
+        embedded = self.embedding(x)
+        lstm_out, _ = self.lstm(embedded)
+        output = self.fc(lstm_out)
+        return output
+
 PoSTagger = MoMPipeline(
     input_dim=len(words),
     embedding_dim=32,
-    hidden_dim=16,
+    hidden_dim=64,
     output_dim=len(tags),
     num_memories=5,
     k=2,
     update_module=LinearAttention()
     )
 
+# PoSTagger = LSTMPipeline(
+#     input_dim=len(words),
+#     embedding_dim=64,
+#     hidden_dim=128,
+#     output_dim=len(tags)
+#     )
 
 PoSTagger = train(
     model=PoSTagger,
@@ -233,6 +262,6 @@ PoSTagger = train(
 )
 
 test_loss = test(PoSTagger, test_loader, torch.nn.CrossEntropyLoss(ignore_index=PAD_IX))
-test_accuracy = compute_score(PoSTagger, test_loader)
+test_accuracy = compute_score(PoSTagger, test_loader, PAD_IX)
 logging.info(f"Test loss: {test_loss:.4f}")
 logging.info(f"Test accuracy: {test_accuracy:.4%}")

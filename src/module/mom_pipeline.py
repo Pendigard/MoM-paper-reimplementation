@@ -15,7 +15,7 @@ class MoMPipeline(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_emb = self.embedding(x)
-        M_0 = torch.zeros(x.shape[1], self.mom.num_memories, self.mom.hidden_dim, self.mom.hidden_dim, device=x.device)
+        M_0 = torch.zeros(x.shape[1], self.mom.num_memories + 1, self.mom.hidden_dim, self.mom.hidden_dim, device=x.device)
         mom_out, _ = self.mom(x_emb, M_0)
         out = self.output_layer(mom_out)
         out = self.output_activation(out)
