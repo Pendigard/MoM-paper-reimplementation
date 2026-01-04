@@ -13,6 +13,7 @@ sys.path.append(root_dir)
 
 from src.module.mom import MoM
 from src.module.retnet import RetNetModule
+from src.module.hgrn import HGRN
 from src.experiment.generate_recall_data import generate_recall_data
 
 
@@ -126,19 +127,26 @@ def run():
     retnet = RetNetModule(CONFIG).to(device)
     losses_retnet, accuracy_retnet = train_model(retnet, "RetNet", CONFIG)
 
+    hgrn = HGRN(CONFIG).to(device)
+    losses_hgrn, accuracy_hgrn = train_model(hgrn, "HGRN", CONFIG)
+
     mom = MoMLLM(CONFIG).to(device)
     losses_mom, accuracy_mom = train_model(mom, "MoM", CONFIG)
 
     plt.figure(figsize=(12, 5))
+    
     plt.subplot(1, 2, 1)
-    plt.plot(losses_retnet, label='RetNet')
-    plt.plot(losses_mom, label='MoM')
+    plt.plot(losses_retnet, label='RetNet (Fixed Decay)')
+    plt.plot(losses_hgrn, label='HGRN (Gated Decay)') 
+    plt.plot(losses_mom, label='MoM (Multi-Memory)')
     plt.title('Training Loss')
     plt.xlabel('Steps')
     plt.ylabel('Loss')
     plt.legend()
+    
     plt.subplot(1, 2, 2)
     plt.plot(accuracy_retnet, label='RetNet')
+    plt.plot(accuracy_hgrn, label='HGRN')         
     plt.plot(accuracy_mom, label='MoM')
     plt.title('Training Accuracy')
     plt.xlabel('Steps')
@@ -146,8 +154,9 @@ def run():
     plt.legend()
     
     plt.savefig('MoM-paper-reimplementation/fig/retnet_vs_mom.png')
-    plt.show()
+
 
 if __name__ == "__main__":
     run()
+
             
