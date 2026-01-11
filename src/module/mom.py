@@ -74,11 +74,15 @@ class MoM(nn.Module):
         batch_size = X.shape[1]
         M_t = M_0
         outputs = []
+        total_aux_loss = 0.0
         for x_t in X:
             if x_t.dim() == 1:
                 x_t = x_t.unsqueeze(0)
             score_t = torch.softmax(self.W_g(x_t), dim=-1)
 
+
+            moyenne_batch = score_t.mean(dim=0)
+            total_aux_loss += torch.sum(moyenne_batch ** 2) * self.num_memories
             m_scores, m_indices = torch.topk(score_t, self.k)
             m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
             m_indices_update = torch.cat([torch.zeros(batch_size, 1, device=M_t.device, dtype=torch.long), m_indices], dim=1) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
@@ -104,4 +108,4 @@ class MoM(nn.Module):
             o_t = q_t.unsqueeze(-2) @ M_out
             outputs.append(o_t.squeeze(1))
 
-        return torch.stack(outputs), M_t
+        return torch.stack(outputs), M_t, total_aux_loss / X.shape[0] 

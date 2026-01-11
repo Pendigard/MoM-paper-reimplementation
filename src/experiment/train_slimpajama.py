@@ -70,15 +70,17 @@ class MoMLLM(nn.Module):
             self.config["dim"], 
             device=x.device
         )
+        total_aux_loss = 0.0
 
         for layer in self.layers:
-            x, _ = layer(x, M.clone())
-            
+            x, M_new, aux = layer(x, M.clone())
+            total_aux_loss += aux
+
         x = x.transpose(0, 1)
         
         x = self.norm(x)
         logits = self.head(x)
-        return logits
+        return logits, total_aux_loss
 
 def get_data_loader(tokenizer, config):
     print(f"Chargement du dataset LOCAL (Mode Hors-Ligne)...")
@@ -140,9 +142,11 @@ def train():
         train_input = input_ids[:, :-1] 
         train_target = input_ids[:, 1:] 
         optimizer.zero_grad()
-        logits = model(train_input) 
+        logits, aux_loss = model(train_input) 
         
-        loss = criterion(logits.reshape(-1, CONFIG["vocab_size"]), train_target.reshape(-1))
+        B, L, V = logits.shape
+        loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
+        loss = loss + 0.01 * aux_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
