@@ -63,7 +63,7 @@ class HGRN(nn.Module):
         out = self.norm(out)
         logits = self.head(out)
 
-        return logits
+        return logits, torch.tensor(0.0, device=input_ids.device)
 
 
 

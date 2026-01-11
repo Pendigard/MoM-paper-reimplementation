@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import logging
+import argparse
+import json
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 from transformers import AutoTokenizer
@@ -25,6 +27,8 @@ logging.basicConfig(level=logging.INFO)
 
 
 from src.module.mom import MoM 
+from src.module.retnet import RetNetModule
+from src.module.hgrn import HGRN
 
 CONFIG = {
     "vocab_size": 32000,    
@@ -104,7 +108,8 @@ def get_data_loader(tokenizer, config):
     dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
     return dataloader
 
-def train():
+def train(args):
+    run_name = f"{args.model}_mem{args.memories}"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -112,13 +117,23 @@ def train():
     tokenizer.pad_token = tokenizer.eos_token
     
     CONFIG["vocab_size"] = len(tokenizer)
+    CONFIG["num_memories"]  = args.memories
 
-    model = MoMLLM(CONFIG).to(device)
-    print(f"Modèle Nano-MoM créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
+    if args.model == "mom":
+        model = MoMLLM(CONFIG).to(device)
+        print(f"Modèle Nano-MoM créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
+    elif args.model == "retnet":
+        model = RetNetModule(CONFIG).to(device)
+        print(f"Modèle RetNet créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
+    elif args.model == "hgrn":
+        model = HGRN(CONFIG).to(device)
+        print(f"Modèle HGRN créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
+
 
     dataloader = get_data_loader(tokenizer, CONFIG)
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["lr"])
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+    loss_history = []
 
     model.train()
     data_iter = iter(dataloader)
@@ -145,16 +160,21 @@ def train():
         logits, aux_loss = model(train_input) 
         
         B, L, V = logits.shape
-        loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
-        loss = loss + 0.01 * aux_loss
+        task_loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
+        loss = task_loss + 0.01 * aux_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        pbar.set_description(f"Loss: {loss.item():.4f}")
+        loss_history.append(task_loss.item())
+        pbar.set_description(f"Loss: {task_loss.item():.4f}")
         if (step + 1) % 1000 == 0:
-            torch.save(model.state_dict(), f"nano_mom_step_{step+1}.pt")
+            torch.save(model.state_dict(), f"{args.model}_slimpajama_step{step+1}.pt")
             
             generate_text(model, tokenizer, device)
+    os.makedirs("results", exist_ok=True)
+    with open(f"results/loss_{run_name}.json", "w") as f:
+        json.dump(loss_history, f)
+    print(f"Sauvegarde terminée.")
 
 def generate_text(model, tokenizer, device, prompt="Computer science is"):
     model.eval()
@@ -162,7 +182,11 @@ def generate_text(model, tokenizer, device, prompt="Computer science is"):
     
     with torch.no_grad():
         for _ in range(20):
-            logits = model(ids)
+            outputs = model(ids)
+            if isinstance(outputs, tuple):
+                logits = outputs[0] 
+            else:
+                logits = outputs
             last_token_logits = logits[:, -1, :]
             
             if torch.isnan(last_token_logits).any():
@@ -180,4 +204,8 @@ def generate_text(model, tokenizer, device, prompt="Computer science is"):
     model.train()
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, required=True, choices=["mom", "retnet", "hgrn"], default="mom", help="Type de modèle à entraîner")
+    parser.add_argument("--memories", type=int, default=4, help="Nombre de mémoires pour MoM")
+    args = parser.parse_args()
+    train(args)

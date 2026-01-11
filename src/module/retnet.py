@@ -25,4 +25,4 @@ class RetNetModule(nn.Module):
 
     def forward(self, input_ids):
         logits, _ = self.model(input_ids)
-        return logits
+        return logits, torch.tensor(0.0, device=input_ids.device)
