@@ -52,10 +52,13 @@ class MoM(nn.Module):
         self.input_dim = input_dim
         self.k = k
 
+        self.layer_norm = nn.LayerNorm(input_dim)
+
         self.W_k = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
         self.W_v = nn.Linear(input_dim, hidden_dim * (num_memories + 1)) # On inclut la mémoire partagée
         self.W_g = nn.Linear(input_dim, num_memories) # On ne calcule pas de score pour la mémoire partagée
         self.W_q = nn.Linear(input_dim, hidden_dim)
+        self.W_o = nn.Linear(hidden_dim, hidden_dim)
 
         self.out_norm = nn.LayerNorm(hidden_dim)
 
@@ -75,6 +78,8 @@ class MoM(nn.Module):
         M_t = M_0
         outputs = []
         total_aux_loss = 0.0
+        scale = self.hidden_dim ** 0.5
+        X = self.layer_norm(X)
         for x_t in X:
             if x_t.dim() == 1:
                 x_t = x_t.unsqueeze(0)
@@ -87,10 +92,10 @@ class MoM(nn.Module):
             m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
             m_indices_update = torch.cat([torch.zeros(batch_size, 1, device=M_t.device, dtype=torch.long), m_indices], dim=1) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
             m_indices_update = m_indices_update.to(device=M_t.device, dtype=torch.long)  
-            
-            g_t = m_scores / m_scores.sum(dim=1, keepdim=True) # On normalise les scores
 
-            M_k = self.W_k(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
+            g_t = m_scores / (m_scores.sum(dim=1, keepdim=True) + 1e-6) # On normalise les scores
+
+            M_k = (self.W_k(x_t) * scale).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
             M_v = self.W_v(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
 
             M_t = self.update_module(M_t, M_k, M_v, m_indices_update)
@@ -104,8 +109,11 @@ class MoM(nn.Module):
 
             M_out = self.out_norm(M_out)
             
-            q_t = self.W_q(x_t)
+            q_t = self.W_q(x_t) * scale
             o_t = q_t.unsqueeze(-2) @ M_out
             outputs.append(o_t.squeeze(1))
 
-        return torch.stack(outputs), M_t, total_aux_loss / X.shape[0] 
+        stacked_outputs = torch.stack(outputs)
+        final_outputs = self.W_o(stacked_outputs)
+
+        return final_outputs, M_t, total_aux_loss / X.shape[0]
