@@ -8,11 +8,8 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import torch
 from typing import List
-import time
 from conllu import parse_incr
 from src.module.mom_pipeline import MoMPipeline
-from src.module.mom import MoM, LinearAttention
-import pickle
 
 logging.basicConfig(level=logging.INFO)
 
@@ -106,6 +103,7 @@ def test(model, data_test, loss_fn):
     with torch.no_grad():
         for batch_x, batch_y in data_test:
             batch_x = batch_x.to(device).long()
+            batch_y = batch_y.to(device).long()
 
             output = model(batch_x)
             out = output.permute(0, 2, 1)
@@ -114,8 +112,7 @@ def test(model, data_test, loss_fn):
     total_loss /= len(data_test)
     return total_loss
 
-def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, writer=None, verbose=10, patience=10):
-    device = next(model.parameters()).device
+def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, writer=None, verbose=10, patience=10, device='cpu'):
     init_patience = patience
     pbar_epochs = tqdm(total=max_epochs, desc="Training (epochs)", position=0)
     best_valid_loss = float('inf')
@@ -126,11 +123,13 @@ def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, wri
         pbar_batches = tqdm(data_train, desc=f"Epoch {epoch+1}/{max_epochs}", position=1, leave=False)
         for batch_x, batch_y in pbar_batches:
             batch_x = batch_x.to(device).long()
+            batch_y = batch_y.to(device)
             optimizer.zero_grad()
             output = model(batch_x)
             out = output.permute(0, 2, 1)
             loss = loss_fn(out, batch_y)
             epoch_loss += loss.item()
+            # print(model.mom.W_q.weight.grad)
             loss.backward()
             optimizer.step()
 
@@ -232,15 +231,17 @@ class LSTMPipeline(nn.Module):
         output = self.fc(lstm_out)
         return output
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logging.info(f"Using device: {device}")
+
 PoSTagger = MoMPipeline(
     input_dim=len(words),
     embedding_dim=32,
     hidden_dim=64,
     output_dim=len(tags),
     num_memories=5,
-    k=2,
-    update_module=LinearAttention()
-    )
+    k=2
+    ).to(device)
 
 # PoSTagger = LSTMPipeline(
 #     input_dim=len(words),
@@ -249,16 +250,19 @@ PoSTagger = MoMPipeline(
 #     output_dim=len(tags)
 #     )
 
+# torch.autograd.set_detect_anomaly(True)
+
 PoSTagger = train(
     model=PoSTagger,
     data_train=train_loader,
     data_valid=dev_loader,
     loss_fn=torch.nn.CrossEntropyLoss(ignore_index=PAD_IX),
-    optimizer=optim.Adam(PoSTagger.parameters(), lr=0.001),
-    max_epochs=100,
+    optimizer=optim.Adam(PoSTagger.parameters(), lr=0.0001),
+    max_epochs=1000,
     writer=SummaryWriter(log_dir="./logs/tagging"),
     verbose=1,
-    patience=5
+    patience=5,
+    device=device
 )
 
 test_loss = test(PoSTagger, test_loader, torch.nn.CrossEntropyLoss(ignore_index=PAD_IX))

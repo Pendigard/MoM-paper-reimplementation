@@ -11,7 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(root_dir)
 
-from src.module.mom import MoM
+from src.module.naive_mom import MoM
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 from src.experiment.generate_recall_data import generate_recall_data
@@ -56,15 +56,13 @@ class MoMLLM(nn.Module):
         batch_size = x.shape[1]
 
         M = torch.zeros(
-            batch_size, 
-            self.config["num_memories"] + 1, 
             self.config["dim"], 
             self.config["dim"], 
             device=x.device
         )
 
         for layer in self.layers:
-            x, _ = layer(x, M.clone())
+            x = layer(x, M.clone())
             
         x = x.transpose(0, 1)
         

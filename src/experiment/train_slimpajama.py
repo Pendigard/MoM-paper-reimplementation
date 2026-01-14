@@ -26,7 +26,7 @@ os.environ["TRANSFORMERS_CACHE"] = os.path.join(VRAC_PATH, "models")
 logging.basicConfig(level=logging.INFO)
 
 
-from src.module.mom import MoM 
+from src.module.naive_mom import MoM 
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 
@@ -82,8 +82,6 @@ class MoMLLM(nn.Module):
         batch_size = x.shape[1]
         
         M = torch.zeros(
-            batch_size, 
-            self.config["num_memories"] + 1, 
             self.config["dim"], 
             self.config["dim"], 
             device=x.device

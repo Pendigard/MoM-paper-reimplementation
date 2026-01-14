@@ -9,7 +9,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(root_dir)
 
-from src.module.mom import MoM
+from src.module.naive_mom import MoM
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 
@@ -45,14 +45,12 @@ class MoMWrapper(nn.Module):
         h_dim = self.model.hidden_dim
         
         M_0 = torch.zeros(
-            batch_size, 
-            num_mems + 1, 
             h_dim, 
             h_dim, 
             device=device
         )
         
-        logits, _ = self.model(x_emb, M_0)
+        logits = self.model(x_emb, M_0)
         
         return logits.transpose(0, 1)
 

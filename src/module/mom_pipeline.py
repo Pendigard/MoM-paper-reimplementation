@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from src.module.mom import MoM
+from src.module.mom_varlen import MoM
 
 
 
