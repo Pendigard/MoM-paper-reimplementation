@@ -3,6 +3,7 @@ import torch.nn as nn
 import time
 from typing import Dict, Tuple, Optional, Callable
 
+
 def linear_attn(M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor) -> torch.Tensor:
     """
     @brief Met à jour la mémoire M avec la clé k et la valeur v en utilisant une attention linéaire.
@@ -24,15 +25,24 @@ def linear_attn(M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indice
     M_new = M.clone()
     return M_new.scatter_add_(dim=1, index=indices_update_exp, src=M_kv_to_add)
 
+class LinearAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor) -> torch.Tensor:
+        return linear_attn(M, M_k, M_v, indices_update)
+
+
 
 class MoM(nn.Module):
-    def __init__(self, input_dim : int, hidden_dim : int, num_memories : int, k : int, *args, **kwargs):
+    def __init__(self, input_dim : int, hidden_dim : int, num_memories : int, k : int, update_module: nn.Module = None, *args, **kwargs):
         """
         @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation naïve, utilisé au début du projet.
         @param input_dim: Dimension de l'entrée x.
         @param hidden_dim: Dimension de chaque mémoire M_t.
         @param num_memories: Nombre de mémoires (Ça ne prend pas en compte la mémoire partagée).
         @param k: Hyperparamètre k pour la sélection des top-k mémoires.
+        @param update_module: Module de mise à jour des mémoires.
         """
         super().__init__(*args, **kwargs)
 
@@ -46,15 +56,15 @@ class MoM(nn.Module):
         self.W_g = nn.Linear(input_dim, num_memories) # On ne calcule pas de score pour la mémoire partagée
         self.W_q = nn.Linear(input_dim, hidden_dim)
 
+        self.update_module = update_module or LinearAttention()
 
         self.softmax = nn.Softmax(dim=-1)
 
-    def forward(self, X : torch.Tensor, M_0: torch.Tensor, update_function : Callable = linear_attn) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, X : torch.Tensor, M_0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         @brief passe-avant du module MoM en version naïve.
         @param M_0: État initiale des mémoires de forme (hidden_dim, hidden_dim).
         @param X: Entrée de forme (seq_len, batch_size, input_dim)
-        @param update_function: Fonction de mise à jour des mémoires.
         @return: Les outputs et l'état final des mémoires. (seq_len, batch_size, hidden_dim), (batch_size, num_memories + 1, hidden_dim, hidden_dim)
         """
         batch_size = X.shape[1]
@@ -75,7 +85,7 @@ class MoM(nn.Module):
             M_k = self.W_k(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
             M_v = self.W_v(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
 
-            M_t = update_function(M_t, M_k, M_v, m_indices_update)
+            M_t = self.update_module(M_t, M_k, M_v, m_indices_update)
 
             # On récupère les états des mémoires sélectionnées
             M_to_use = M_t.gather(dim=1, index=m_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.hidden_dim, self.hidden_dim))

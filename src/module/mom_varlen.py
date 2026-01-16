@@ -122,8 +122,24 @@ def first_idx(tensor: torch.Tensor) -> torch.Tensor:
     first_idx = torch.nonzero(is_start, as_tuple=True)[0]
     return first_idx
 
+class LinearAttentionVarlen(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.update_function = linear_attn_varlen
+
+    def forward(self, q : torch.Tensor, k : torch.Tensor, v : torch.Tensor, s : torch.Tensor, M_0 : torch.Tensor) -> torch.Tensor:
+        return self.update_function(q, k, v, s, M_0)
+
+class LinearAttentionVarlenTriton(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.update_function = linear_attn_varlen_triton
+
+    def forward(self, q : torch.Tensor, k : torch.Tensor, v : torch.Tensor, s : torch.Tensor, M_0 : torch.Tensor) -> torch.Tensor:
+        return self.update_function(q, k, v, s, M_0)
+
 class MoM(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, num_memories: int, k: int, *args, **kwargs):
+    def __init__(self, input_dim: int, hidden_dim: int, num_memories: int, k: int, update_module: nn.Module = None, *args, **kwargs):
         """
         @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation varlen optimisée avec triton.
         @param input_dim: Dimension de l'entrée x.
@@ -143,6 +159,9 @@ class MoM(nn.Module):
         self.W_v = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
         self.W_g = nn.Linear(input_dim, num_memories)  # routing over locals only
         self.W_q = nn.Linear(input_dim, hidden_dim)
+
+        self.update_module = update_module or LinearAttentionVarlen()
+        self.softmax = nn.Softmax(dim=-1)
 
     @torch.no_grad()
     def build_varlen_pack(self, X: torch.Tensor, indices: torch.Tensor, scores: torch.Tensor):
@@ -214,24 +233,24 @@ class MoM(nn.Module):
         self,
         X: torch.Tensor, # (T, B, Din)
         M0: torch.Tensor, # (B, M+1, d, d)
-        varlen_update: Callable = linear_attn_varlen_triton,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         """
         @brief passe-avant du module MoM en version varlen.
         @param X: Entrée de forme (seq_len, batch_size, input_dim)
         @param M0: État initiale des mémoires de forme (hidden_dim, hidden_dim).
-        @param varlen_update: Fonction de mise à jour des mémoires avec varlen.
+        @param update_function: Fonction de mise à jour des mémoires avec varlen.
         @return: Les outputs de forme (seq_len, batch_size, hidden_dim)
         """
 
         T, B, _ = X.shape
 
-        scores = nn.Softmax(dim=-1)(self.W_g(X)) # (T, B, M)
+        scores = self.W_g(X)  # (T, B, M)
+        scores = self.softmax(scores)  # (T, B, M)
         m_scores, m_indices = torch.topk(scores, self.k) # (T, B, k)
         m_scores = m_scores / m_scores.sum(dim=-1, keepdim=True) # Normalisation des scores
         m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
-        m_indices_update = torch.cat([torch.zeros(T, B, 1, dtype=torch.long, device=X.device), m_indices], dim=2) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
-        m_scores_update = torch.cat([torch.ones(T, B, 1, dtype=torch.long, device=X.device), m_scores], dim=2)  # On ajoute un score de 1 pour la mémoire partagée
+        m_indices_update = torch.cat([torch.zeros(T, B, 1, dtype=m_indices.dtype, device=X.device), m_indices], dim=2) # On ajoute la mémoire partagée (index 0) aux indices des mémoires à mettre à jour
+        m_scores_update = torch.cat([torch.ones(T, B, 1, dtype=m_scores.dtype, device=X.device), m_scores], dim=2)  # On ajoute un score de 1 pour la mémoire partagée
 
         pack = self.build_varlen_pack(X, m_indices_update, m_scores_update)
         # N = T * B * (k + 1)
@@ -246,7 +265,7 @@ class MoM(nn.Module):
         k_tilde = K_all[torch.arange(Tt, device=x_tilde.device), m_id] # (N, d)
         v_tilde = V_all[torch.arange(Tt, device=x_tilde.device), m_id] # (N, d)
 
-        o_tilde = varlen_update(q_tilde, k_tilde, v_tilde, pack["s"], M0)
+        o_tilde = self.update_module(q_tilde, k_tilde, v_tilde, pack["s"], M0)
 
         o = torch.zeros(T, B, d, device=X.device, dtype=X.dtype)
 
