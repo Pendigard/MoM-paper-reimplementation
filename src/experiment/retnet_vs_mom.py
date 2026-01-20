@@ -15,6 +15,7 @@ from src.module.naive_mom import MoM
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 from src.experiment.generate_recall_data import generate_recall_data
+from src.module.mom_llm import MoMLLM
 
 
 CONFIG = {
@@ -22,53 +23,16 @@ CONFIG = {
     "dim": 64,
     "num_layers": 2,
     "num_memories": 4,
-    "top_k": 2,           
+    "k": 2,        
+    "mode": "gla",
     "seq_len": 128,
     "num_examples": 1000,
     "batch_size": 16,
     "learning_rate": 1e-3,
-    "steps": 3000,
+    "steps": 500,
+    "hidden_dim": 64,
     "dropout": 0.0
 }
-
-class MoMLLM(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config 
-        self.embedding = nn.Embedding(config["vocab_size"], config["dim"])
-        
-        self.layers = nn.ModuleList([
-            MoM(
-                input_dim=config["dim"], 
-                hidden_dim=config["dim"], 
-                num_memories=config["num_memories"], 
-                k=config["top_k"]
-            ) for _ in range(config["num_layers"])
-        ])
-        
-        self.norm = nn.LayerNorm(config["dim"])
-        self.head = nn.Linear(config["dim"], config["vocab_size"], bias=False)
-        self.head.weight = self.embedding.weight
-
-    def forward(self, input_ids):
-        x = self.embedding(input_ids).transpose(0, 1)
-        
-        batch_size = x.shape[1]
-
-        M = torch.zeros(
-            self.config["dim"], 
-            self.config["dim"], 
-            device=x.device
-        )
-
-        for layer in self.layers:
-            x = layer(x, M.clone())
-            
-        x = x.transpose(0, 1)
-        
-        x = self.norm(x)
-        logits = self.head(x)
-        return logits
 
 def train_model(model, name, config):
     print(f"--- Entraînement de {name} ---")
@@ -104,9 +68,18 @@ def train_model(model, name, config):
             x = x.unsqueeze(0)
             y = y.unsqueeze(0)
 
-        logits = model(x)
+        outputs = model(x)
+
+        if isinstance(outputs, tuple):
+            logits = outputs[0]
+            aux_loss = outputs[1]
+        else:
+            logits = outputs
+            aux_loss = 0.0
         
-        loss = criterion(logits[:, -1, :], y[:, -1])
+        loss_base = criterion(logits[:, -1, :], y[:, -1])
+
+        loss = loss_base + 0.01 * aux_loss
         
         optimizer.zero_grad()
         loss.backward()
@@ -122,21 +95,52 @@ def train_model(model, name, config):
 
 def run(): 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    mom_gdelta = MoMLLM(
+        vocab_size=CONFIG["vocab_size"],
+        hidden_dim=CONFIG["hidden_dim"],
+        num_memories=CONFIG["num_memories"],
+        k=CONFIG["k"],
+        num_layers=CONFIG["num_layers"],
+        mode= "deltanet"
+    ).to(device)
+    losses_mom_gdelta, accuracy_mom_gdelta = train_model(mom_gdelta, "MoM_GDelta", CONFIG)
+
     retnet = RetNetModule(CONFIG).to(device)
     losses_retnet, accuracy_retnet = train_model(retnet, "RetNet", CONFIG)
 
     hgrn = HGRN(CONFIG).to(device)
     losses_hgrn, accuracy_hgrn = train_model(hgrn, "HGRN", CONFIG)
 
-    mom = MoMLLM(CONFIG).to(device)
-    losses_mom, accuracy_mom = train_model(mom, "MoM", CONFIG)
+    mom_linear = MoMLLM(
+        vocab_size=CONFIG["vocab_size"],
+        hidden_dim=CONFIG["hidden_dim"],
+        num_memories=CONFIG["num_memories"],
+        k=CONFIG["k"],
+        num_layers=CONFIG["num_layers"],
+        mode= "linear"
+    ).to(device)
+    losses_mom_linear, accuracy_mom_linear = train_model(mom_linear, "MoM_Linear", CONFIG)
+
+    mom_gla = MoMLLM(
+        vocab_size=CONFIG["vocab_size"],
+        hidden_dim=CONFIG["hidden_dim"],
+        num_memories=CONFIG["num_memories"],
+        k=CONFIG["k"],
+        num_layers=CONFIG["num_layers"],
+        mode= "gla"
+    ).to(device)
+    losses_mom_gla, accuracy_mom_gla = train_model(mom_gla, "MoM_GLA", CONFIG)
+
 
     plt.figure(figsize=(12, 5))
     
     plt.subplot(1, 2, 1)
     plt.plot(losses_retnet, label='RetNet (Fixed Decay)')
     plt.plot(losses_hgrn, label='HGRN (Gated Decay)') 
-    plt.plot(losses_mom, label='MoM (Multi-Memory)')
+    plt.plot(losses_mom_linear, label='MoM (Linear)')
+    plt.plot(losses_mom_gla, label='MoM (GLA)')
+    plt.plot(losses_mom_gdelta, label='MoM (GDelta)')
     plt.title('Training Loss')
     plt.xlabel('Steps')
     plt.ylabel('Loss')
@@ -144,8 +148,10 @@ def run():
     
     plt.subplot(1, 2, 2)
     plt.plot(accuracy_retnet, label='RetNet')
-    plt.plot(accuracy_hgrn, label='HGRN')         
-    plt.plot(accuracy_mom, label='MoM')
+    plt.plot(accuracy_hgrn, label='HGRN') 
+    plt.plot(accuracy_mom_linear, label='MoM (Linear)')
+    plt.plot(accuracy_mom_gla, label='MoM (GLA)')
+    plt.plot(accuracy_mom_gdelta, label='MoM (GDelta)')        
     plt.title('Training Accuracy')
     plt.xlabel('Steps')
     plt.ylabel('Accuracy')

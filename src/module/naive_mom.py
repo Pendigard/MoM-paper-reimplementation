@@ -35,7 +35,7 @@ class LinearAttention(nn.Module):
 
 
 class MoM(nn.Module):
-    def __init__(self, input_dim : int, hidden_dim : int, num_memories : int, k : int, update_module: nn.Module = None, *args, **kwargs):
+    def __init__(self, input_dim : int, hidden_dim : int, num_memories : int, k : int, update_module: nn.Module = None, mode = "linear", *args, **kwargs):
         """
         @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation naïve, utilisé au début du projet.
         @param input_dim: Dimension de l'entrée x.
@@ -50,11 +50,18 @@ class MoM(nn.Module):
         self.hidden_dim = hidden_dim
         self.input_dim = input_dim
         self.k = k
+        self.mode = mode
 
         self.W_k = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
         self.W_v = nn.Linear(input_dim, hidden_dim * (num_memories + 1)) # On inclut la mémoire partagée
         self.W_g = nn.Linear(input_dim, num_memories) # On ne calcule pas de score pour la mémoire partagée
         self.W_q = nn.Linear(input_dim, hidden_dim)
+
+        if self.mode == "gla":
+            self.W_gate = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
+        elif self.mode == "deltanet":
+            # comme on a a et b on doit doubler la taille
+            self.W_gate = nn.Linear(input_dim, hidden_dim * 2 * (num_memories + 1))
 
         self.update_module = update_module or LinearAttention()
 
@@ -85,7 +92,37 @@ class MoM(nn.Module):
             M_k = self.W_k(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
             M_v = self.W_v(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
 
-            M_t = self.update_module(M_t, M_k, M_v, m_indices_update)
+            if self.mode == "linear":
+                M_t = self.update_module(M_t, M_k, M_v, m_indices_update)
+            else :
+                active_mask = torch.zeros(batch_size, self.num_memories + 1, device=X.device)
+                active_mask.scatter_(1, m_indices_update, 1)
+                mask = active_mask.view(batch_size, self.num_memories + 1, 1, 1)
+
+                if self.mode == "gla":
+                    gate_logits = self.W_gate(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
+                    alpha = torch.sigmoid(gate_logits).unsqueeze(-1) 
+                    M_decayed = M_t * alpha
+                    kv = M_k.unsqueeze(-1) @ M_v.unsqueeze(-2)
+                    M_new = M_decayed + kv
+                    M_t = M_new * mask + (1-mask) * M_t
+                elif self.mode == "deltanet":
+                    gates = self.W_gate(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim * 2)
+                    
+                    alpha1, beta1 = torch.sigmoid(gates).chunk(2, dim=-1)
+                    alpha = torch.sigmoid(alpha1).unsqueeze(2)
+                    beta = torch.sigmoid(beta1).unsqueeze(2)
+                    
+                    recall = torch.matmul(M_k.unsqueeze(2), M_t)
+                    V = beta * M_v.unsqueeze(2)
+                    recall_weighted = recall * alpha
+                    
+                    bracket = V - recall_weighted
+                    update = torch.matmul(M_k.unsqueeze(3), bracket)
+                    M_new = (alpha * M_t) + update
+                    M_t = mask * M_new + (1 - mask) * M_t
+
+
 
             # On récupère les états des mémoires sélectionnées
             M_to_use = M_t.gather(dim=1, index=m_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.hidden_dim, self.hidden_dim))

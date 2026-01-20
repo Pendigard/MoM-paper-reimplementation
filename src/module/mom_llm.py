@@ -19,7 +19,7 @@ class MLP(nn.Module):
 
 
 class MoMLLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, *args, **kwargs):
+    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, mode="linear", update_module : nn.Module = None, *args, **kwargs):
         super().__init__()
         self.vocab_size = vocab_size
         self.hidden_dim = hidden_dim
@@ -36,6 +36,7 @@ class MoMLLM(nn.Module):
                 hidden_dim=hidden_dim, 
                 num_memories=num_memories, 
                 k=k,
+                mode = mode,
                 update_module=update_module or naive_mom.LinearAttention()
             ) for _ in range(num_layers)
         ])
