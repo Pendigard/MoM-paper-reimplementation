@@ -36,6 +36,7 @@ class MoMLLM(nn.Module):
                 hidden_dim=hidden_dim, 
                 num_memories=num_memories, 
                 k=k,
+                mode = mode,
                 update_module=update_module or naive_mom.LinearAttention()
             ) for _ in range(num_layers)
         ])

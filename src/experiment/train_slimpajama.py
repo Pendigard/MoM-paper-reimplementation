@@ -26,7 +26,7 @@ os.environ["TRANSFORMERS_CACHE"] = os.path.join(VRAC_PATH, "models")
 logging.basicConfig(level=logging.INFO)
 
 
-from src.module.naive_mom import MoM 
+from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 
@@ -34,12 +34,14 @@ CONFIG = {
     "vocab_size": 32000,    
     "dim": 256,             
     "num_layers": 4,      
-    "num_memories": 4,     
+    "num_memories": 4, 
+    "hidden_dim": 256,   
     "top_k": 2,            
     "seq_len": 512,         
     "batch_size": 2,      
     "lr": 3e-4,            
     "max_steps": 5000,      
+    "update_module": LinearAttention(),
     "dataset_name": "cerebras/SlimPajama-627B" 
 }
 class MoMLLM(nn.Module):
@@ -54,9 +56,14 @@ class MoMLLM(nn.Module):
             self.layers.append(
                 MoM(
                     input_dim=config["dim"], 
-                    hidden_dim=config["dim"], 
+                    hidden_dim=config["hidden_dim"], 
                     num_memories=config["num_memories"], 
-                    k=config["top_k"]
+                    k=config["top_k"],
+                    update_module=GDeltaAttention(
+                    input_dim=config["dim"],
+                    hidden_dim=config["dim"],
+                    num_memories=config["num_memories"]
+                    )
                 )
             )
         
@@ -133,7 +140,6 @@ def train(args):
     tokenizer.pad_token = tokenizer.eos_token
     
     CONFIG["vocab_size"] = len(tokenizer)
-    CONFIG["num_memories"]  = args.memories
 
     if args.model == "mom":
         model = MoMLLM(CONFIG).to(device)

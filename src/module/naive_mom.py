@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
 import time
 from typing import Dict, Tuple, Optional, Callable
@@ -69,13 +70,13 @@ class GDeltaAttention(nn.Module):
         V = beta * M_v.unsqueeze(2)
         recall_weighted = recall * alpha
 
-        bracket = V - recall_weighted
-        update = torch.matmul(M_k.unsqueeze(3), bracket)
-        M_new_active = (alpha * M) + update
-
         active_mask = torch.zeros(B, N, device=M.device)
         active_mask.scatter_(1, indices_update, 1)
         mask = active_mask.view(B, N, 1, 1)
+
+        bracket = V - recall_weighted
+        update = torch.matmul(M_k.unsqueeze(3), bracket)
+        M_new_active = (alpha * M) + update
 
         return mask * M_new_active + (1 - mask) * M
 
@@ -117,10 +118,14 @@ class MoM(nn.Module):
         batch_size = X.shape[1]
         M_t = M_0.expand(batch_size, self.num_memories + 1, self.hidden_dim, self.hidden_dim)
         outputs = []
+        total_aux_loss = 0.0
         for x_t in X:
             if x_t.dim() == 1:
                 x_t = x_t.unsqueeze(0)
             score_t = torch.softmax(self.W_g(x_t), dim=-1)
+
+            usage = score_t.mean(dim=0)
+            total_aux_loss += torch.sum(usage ** 2)
 
             m_scores, m_indices = torch.topk(score_t, self.k)
             m_indices = m_indices + 1 # On décale de 1 car la sélection ne se fait pas sur la mémoire partagée
@@ -131,6 +136,8 @@ class MoM(nn.Module):
 
             M_k = self.W_k(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
             M_v = self.W_v(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
+
+            M_k = F.normalize(M_k, p=2, dim=-1)
 
             M_t = self.update_module(M_t, M_k, M_v, m_indices_update, x_t) if self.update_module.__class__ in [GLAAttention, GDeltaAttention] else self.update_module(M_t, M_k, M_v, m_indices_update)
 
@@ -145,5 +152,5 @@ class MoM(nn.Module):
             o_t = q_t.unsqueeze(-2) @ M_out
             outputs.append(o_t.squeeze(1))
 
-        return torch.stack(outputs)
+        return torch.stack(outputs), M_t, total_aux_loss/X.shape[0]
     
