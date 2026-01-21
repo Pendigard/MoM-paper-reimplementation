@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO)
 from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
+from src.module.mom_llm import MoMLLM
 
 CONFIG = {
     "vocab_size": 32000,    
@@ -44,7 +45,7 @@ CONFIG = {
     "update_module": LinearAttention(),
     "dataset_name": "cerebras/SlimPajama-627B" 
 }
-class MoMLLM(nn.Module):
+class MoMLLMss(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config 
@@ -142,7 +143,14 @@ def train(args):
     CONFIG["vocab_size"] = len(tokenizer)
 
     if args.model == "mom":
-        model = MoMLLM(CONFIG).to(device)
+        model = MoMLLM(
+            vocab_size=CONFIG["vocab_size"],
+            hidden_dim=CONFIG["hidden_dim"],
+            num_memories=CONFIG["num_memories"],
+            k=CONFIG["top_k"],
+            num_layers=CONFIG["num_layers"],
+            update_module=LinearAttention()
+        ).to(device)
         print(f"Modèle Nano-MoM créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
     elif args.model == "retnet":
         model = RetNetModule(CONFIG).to(device)

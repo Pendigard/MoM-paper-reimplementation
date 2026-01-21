@@ -36,7 +36,6 @@ class MoMLLM(nn.Module):
                 hidden_dim=hidden_dim, 
                 num_memories=num_memories, 
                 k=k,
-                mode = mode,
                 update_module=update_module or naive_mom.LinearAttention()
             ) for _ in range(num_layers)
         ])
@@ -59,8 +58,22 @@ class MoMLLM(nn.Module):
         self.output_layer = nn.Linear(hidden_dim, vocab_size, bias=False)
         # self.output_layer.weight = self.embedding.weight
 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.zeros_(module.bias)
+            torch.nn.init.ones_(module.weight)
+
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         x = self.embedding(input_ids).transpose(0, 1)
+        total_aux_loss = 0.0
         
         M = torch.zeros(
             self.hidden_dim,
@@ -69,12 +82,15 @@ class MoMLLM(nn.Module):
         )
 
         for i, layer in enumerate(self.layers):
-            x = x + layer(self.norms_1[i](x), M.clone())
+            x_norm = self.norms_1[i](x)
+            layer_out, _, layer_loss = layer(x_norm, M)
+            total_aux_loss += layer_loss
+            x = x + layer_out
             x = x + self.MLPs[i](self.norms_2[i](x).transpose(0, 1)).transpose(0, 1)
         x = x.transpose(0, 1)
 
         logits = self.output_layer(x)
-        return logits
+        return logits, total_aux_loss
     
 
 if __name__ == "__main__":

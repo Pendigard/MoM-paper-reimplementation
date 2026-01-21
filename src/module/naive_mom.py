@@ -14,6 +14,8 @@ def linear_attn(M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indice
     @param indices_update: Indices des mémoires à mettre à jour de forme (batch_size, k + 1)
     @return: Mémoire mise à jour de forme (batch_size, num_memories,  hidden_dim, hidden_dim)
     """
+
+    
     hidden_dim = M.shape[2]
 
     M_kv = M_k.unsqueeze(-1) @ M_v.unsqueeze(-2)
@@ -26,12 +28,25 @@ def linear_attn(M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indice
     M_new = M.clone()
     return M_new.scatter_add_(dim=1, index=indices_update_exp, src=M_kv_to_add)
 
+def linear_attn_v2(M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor, decay : float = 0.99) -> torch.Tensor:
+    B, N, D, _ = M.shape
+    active_mask = torch.zeros(B, N, device=M.device)
+    active_mask.scatter_(1, indices_update, 1.0)
+
+    mask = active_mask.view(B,N,1,1)
+
+    M_kv_to_add = M_k.unsqueeze(-1) @ M_v.unsqueeze(-2)
+
+    M_update = (M * decay) + M_kv_to_add
+    
+    return mask * M_update + (1 - mask) * M
+
 class LinearAttention(nn.Module):
     def __init__(self):
         super().__init__()
 
     def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor) -> torch.Tensor:
-        return linear_attn(M, M_k, M_v, indices_update)
+        return linear_attn_v2(M, M_k, M_v, indices_update)
 
 class GLAAttention(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_memories):
