@@ -11,7 +11,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(root_dir)
 
-from src.module.naive_mom import MoM
+from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 from src.experiment.generate_recall_data import generate_recall_data
@@ -20,18 +20,17 @@ from src.module.mom_llm import MoMLLM
 
 CONFIG = {
 "vocab_size": 200,
-    "dim": 64,
-    "num_layers": 2,
-    "num_memories": 4,
-    "k": 2,        
-    "mode": "gla",
-    "seq_len": 128,
-    "num_examples": 1000,
-    "batch_size": 16,
-    "learning_rate": 1e-3,
-    "steps": 500,
-    "hidden_dim": 64,
-    "dropout": 0.0
+"dim": 64,
+"num_layers": 2,
+"num_memories": 4,
+"k": 2,        
+"seq_len": 128,
+"num_examples": 1000,
+"batch_size": 16,
+"learning_rate": 1e-3,
+"steps": 500,
+"hidden_dim": 64,
+"dropout": 0.0
 }
 
 def train_model(model, name, config):
@@ -102,7 +101,8 @@ def run():
         num_memories=CONFIG["num_memories"],
         k=CONFIG["k"],
         num_layers=CONFIG["num_layers"],
-        mode= "deltanet"
+        update_module=GDeltaAttention(CONFIG["dim"], CONFIG["hidden_dim"], CONFIG["num_memories"]),
+
     ).to(device)
     losses_mom_gdelta, accuracy_mom_gdelta = train_model(mom_gdelta, "MoM_GDelta", CONFIG)
 
@@ -118,7 +118,6 @@ def run():
         num_memories=CONFIG["num_memories"],
         k=CONFIG["k"],
         num_layers=CONFIG["num_layers"],
-        mode= "linear"
     ).to(device)
     losses_mom_linear, accuracy_mom_linear = train_model(mom_linear, "MoM_Linear", CONFIG)
 
@@ -128,7 +127,8 @@ def run():
         num_memories=CONFIG["num_memories"],
         k=CONFIG["k"],
         num_layers=CONFIG["num_layers"],
-        mode= "gla"
+        update_module=GLAAttention(CONFIG["dim"], CONFIG["hidden_dim"], CONFIG["num_memories"]),
+        
     ).to(device)
     losses_mom_gla, accuracy_mom_gla = train_model(mom_gla, "MoM_GLA", CONFIG)
 
@@ -157,7 +157,7 @@ def run():
     plt.ylabel('Accuracy')
     plt.legend()
     
-    plt.savefig('MoM-paper-reimplementation/fig/retnet_vs_mom.png')
+    plt.savefig('MoM-paper-reimplementation/fig/retnet_vs_moms.png')
 
 
 if __name__ == "__main__":

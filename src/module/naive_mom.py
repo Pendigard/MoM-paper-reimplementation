@@ -32,6 +32,52 @@ class LinearAttention(nn.Module):
     def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor) -> torch.Tensor:
         return linear_attn(M, M_k, M_v, indices_update)
 
+class GLAAttention(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_memories):
+        super().__init__()
+        self.W_gate = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
+
+    def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor, x_t : torch.Tensor) -> torch.Tensor:
+        B, N, D, _ = M.shape
+
+        logits = self.W_gate(x_t).reshape(B, N, D)
+        alpha = torch.sigmoid(logits).unsqueeze(-1)
+
+        active_mask = torch.zeros(B, N, device=M.device)
+        active_mask.scatter_(1, indices_update, 1)
+        mask = active_mask.view(B, N, 1, 1)
+
+        kv = M_k.unsqueeze(-1) @ M_v.unsqueeze(-2)
+        M_new_active = M * alpha + kv
+
+        return mask * M_new_active + (1 - mask) * M
+
+class GDeltaAttention(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_memories):
+        super().__init__()
+        self.W_gate = nn.Linear(input_dim, hidden_dim * 2 * (num_memories + 1))
+
+    def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor, x_t : torch.Tensor) -> torch.Tensor:
+        B, N, D, _ = M.shape
+
+        gates = self.W_gate(x_t).reshape(B, N, D * 2)
+        alpha1, beta1 = torch.sigmoid(gates).chunk(2, dim=-1)
+        alpha = torch.sigmoid(alpha1).unsqueeze(2)
+        beta = torch.sigmoid(beta1).unsqueeze(2)
+
+        recall = torch.matmul(M_k.unsqueeze(2), M)
+        V = beta * M_v.unsqueeze(2)
+        recall_weighted = recall * alpha
+
+        bracket = V - recall_weighted
+        update = torch.matmul(M_k.unsqueeze(3), bracket)
+        M_new_active = (alpha * M) + update
+
+        active_mask = torch.zeros(B, N, device=M.device)
+        active_mask.scatter_(1, indices_update, 1)
+        mask = active_mask.view(B, N, 1, 1)
+
+        return mask * M_new_active + (1 - mask) * M
 
 
 class MoM(nn.Module):
@@ -56,12 +102,6 @@ class MoM(nn.Module):
         self.W_v = nn.Linear(input_dim, hidden_dim * (num_memories + 1)) # On inclut la mémoire partagée
         self.W_g = nn.Linear(input_dim, num_memories) # On ne calcule pas de score pour la mémoire partagée
         self.W_q = nn.Linear(input_dim, hidden_dim)
-
-        if self.mode == "gla":
-            self.W_gate = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
-        elif self.mode == "deltanet":
-            # comme on a a et b on doit doubler la taille
-            self.W_gate = nn.Linear(input_dim, hidden_dim * 2 * (num_memories + 1))
 
         self.update_module = update_module or LinearAttention()
 
@@ -92,37 +132,7 @@ class MoM(nn.Module):
             M_k = self.W_k(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
             M_v = self.W_v(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
 
-            if self.mode == "linear":
-                M_t = self.update_module(M_t, M_k, M_v, m_indices_update)
-            else :
-                active_mask = torch.zeros(batch_size, self.num_memories + 1, device=X.device)
-                active_mask.scatter_(1, m_indices_update, 1)
-                mask = active_mask.view(batch_size, self.num_memories + 1, 1, 1)
-
-                if self.mode == "gla":
-                    gate_logits = self.W_gate(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim)
-                    alpha = torch.sigmoid(gate_logits).unsqueeze(-1) 
-                    M_decayed = M_t * alpha
-                    kv = M_k.unsqueeze(-1) @ M_v.unsqueeze(-2)
-                    M_new = M_decayed + kv
-                    M_t = M_new * mask + (1-mask) * M_t
-                elif self.mode == "deltanet":
-                    gates = self.W_gate(x_t).reshape(batch_size, self.num_memories + 1, self.hidden_dim * 2)
-                    
-                    alpha1, beta1 = torch.sigmoid(gates).chunk(2, dim=-1)
-                    alpha = torch.sigmoid(alpha1).unsqueeze(2)
-                    beta = torch.sigmoid(beta1).unsqueeze(2)
-                    
-                    recall = torch.matmul(M_k.unsqueeze(2), M_t)
-                    V = beta * M_v.unsqueeze(2)
-                    recall_weighted = recall * alpha
-                    
-                    bracket = V - recall_weighted
-                    update = torch.matmul(M_k.unsqueeze(3), bracket)
-                    M_new = (alpha * M_t) + update
-                    M_t = mask * M_new + (1 - mask) * M_t
-
-
+            M_t = self.update_module(M_t, M_k, M_v, m_indices_update, x_t) if self.update_module.__class__ in [GLAAttention, GDeltaAttention] else self.update_module(M_t, M_k, M_v, m_indices_update)
 
             # On récupère les états des mémoires sélectionnées
             M_to_use = M_t.gather(dim=1, index=m_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, self.hidden_dim, self.hidden_dim))
