@@ -10,6 +10,8 @@ import torch
 from typing import List
 from conllu import parse_incr
 from src.module.mom_pipeline import MoMPipeline
+import src.module.mom_varlen as mom_varlen
+import src.module.naive_mom as naive_mom
 
 logging.basicConfig(level=logging.INFO)
 
@@ -129,7 +131,6 @@ def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, wri
             out = output.permute(0, 2, 1)
             loss = loss_fn(out, batch_y)
             epoch_loss += loss.item()
-            # print(model.mom.W_q.weight.grad)
             loss.backward()
             optimizer.step()
 
@@ -234,13 +235,17 @@ class LSTMPipeline(nn.Module):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.info(f"Using device: {device}")
 
+use_triton = True
 PoSTagger = MoMPipeline(
     input_dim=len(words),
     embedding_dim=32,
     hidden_dim=64,
     output_dim=len(tags),
     num_memories=5,
-    k=2
+    k=2,
+    output_activation=nn.ReLU(),
+    mom_implementation = naive_mom.MoM if use_triton == False else mom_varlen.MoM,
+    update_module = naive_mom.LinearAttention() if use_triton == False else mom_varlen.LinearAttentionVarlenModule(use_triton = True)
     ).to(device)
 
 # PoSTagger = LSTMPipeline(
@@ -261,7 +266,7 @@ PoSTagger = train(
     max_epochs=1000,
     writer=SummaryWriter(log_dir="./logs/tagging"),
     verbose=1,
-    patience=5,
+    patience=10,
     device=device
 )
 

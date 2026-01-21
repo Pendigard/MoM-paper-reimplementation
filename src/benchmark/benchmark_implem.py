@@ -27,11 +27,11 @@ def make_modules(
     @return: tuple des trois modules (triton, torch varlen, naive)
     """
     module_triton = mom_hw_eff.MoM(
-        input_dim=input_dim, hidden_dim=hidden_dim, num_memories=num_memories, k=k, update_module=mom_hw_eff.LinearAttentionVarlenTriton()
+        input_dim=input_dim, hidden_dim=hidden_dim, num_memories=num_memories, k=k, update_module=mom_hw_eff.LinearAttentionVarlenModule(use_triton=True)
     ).to(device=device, dtype=dtype)
 
     module_ref = mom_hw_eff.MoM(
-        input_dim=input_dim, hidden_dim=hidden_dim, num_memories=num_memories, k=k, update_module=mom_hw_eff.LinearAttentionVarlen()
+        input_dim=input_dim, hidden_dim=hidden_dim, num_memories=num_memories, k=k, update_module=mom_hw_eff.LinearAttentionVarlenModule(use_triton=False)
     ).to(device=device, dtype=dtype)
     module_ref.load_state_dict(module_triton.state_dict())
 
