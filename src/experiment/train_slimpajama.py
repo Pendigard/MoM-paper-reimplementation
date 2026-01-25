@@ -41,9 +41,10 @@ CONFIG = {
     "seq_len": 512,         
     "batch_size": 2,      
     "lr": 3e-4,            
-    "max_steps": 5000,      
+    "max_steps": 100000 ,      
     "update_module": LinearAttention(),
-    "dataset_name": "cerebras/SlimPajama-627B" 
+    "dataset_name": "cerebras/SlimPajama-627B",
+    "gradient_accumulation_steps":  16
 }
 class MoMLLMss(nn.Module):
     def __init__(self, config):
@@ -110,26 +111,52 @@ class MoMLLMss(nn.Module):
         
         return logits, total_aux_loss
 
+# def get_data_loader(tokenizer, config):
+#     print(f"Chargement du dataset LOCAL (Mode Hors-Ligne)...")
+    
+#     local_file = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/example_train_0.jsonl.zst"
+    
+#     dataset = load_dataset("json", data_files=local_file, split="train", streaming=False)
+    
+#     dataset = dataset.shuffle(seed=42) 
+#     def tokenize(examples):
+#         return tokenizer(
+#             examples["text"],
+#             truncation=True,
+#             max_length=config["seq_len"],
+#             padding="max_length"
+#         )
+
+#     dataset = dataset.map(tokenize, batched=True, remove_columns=["text", "meta"])
+#     dataset = dataset.with_format("torch")
+    
+#     dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
+#     return dataloader
+
 def get_data_loader(tokenizer, config):
-    print(f"Chargement du dataset LOCAL (Mode Hors-Ligne)...")
+    print(f"Chargement du dataset {config['dataset_name']} en mode STREAMING...")
     
-    local_file = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/example_train_0.jsonl.zst"
+    dataset = load_dataset(config["dataset_name"], split="train", streaming=True)
     
-    dataset = load_dataset("json", data_files=local_file, split="train", streaming=False)
-    
-    dataset = dataset.shuffle(seed=42) 
+    dataset = dataset.shuffle(seed=42, buffer_size=10000)
+
     def tokenize(examples):
-        return tokenizer(
+        outputs = tokenizer(
             examples["text"],
             truncation=True,
             max_length=config["seq_len"],
-            padding="max_length"
+            padding="max_length",
         )
+        return outputs
 
-    dataset = dataset.map(tokenize, batched=True, remove_columns=["text", "meta"])
-    dataset = dataset.with_format("torch")
+    dataset = dataset.map(tokenize, remove_columns=["text", "meta", "red_pajama_subset"])
     
-    dataloader = DataLoader(dataset, batch_size=config["batch_size"], shuffle=True)
+    def collate_fn(batch):
+        input_ids = [torch.tensor(item['input_ids']) for item in batch]
+        input_ids = torch.stack(input_ids)
+        return {"input_ids": input_ids}
+
+    dataloader = DataLoader(dataset, batch_size=config["batch_size"], collate_fn=collate_fn)
     return dataloader
 
 def train(args):
@@ -143,13 +170,19 @@ def train(args):
     CONFIG["vocab_size"] = len(tokenizer)
 
     if args.model == "mom":
+        update_layer = GLAAttention(
+            input_dim=CONFIG["dim"],      
+            hidden_dim=CONFIG["hidden_dim"],     
+            num_memories=CONFIG["num_memories"]
+        )
+
         model = MoMLLM(
             vocab_size=CONFIG["vocab_size"],
             hidden_dim=CONFIG["hidden_dim"],
             num_memories=CONFIG["num_memories"],
             k=CONFIG["top_k"],
             num_layers=CONFIG["num_layers"],
-            update_module=LinearAttention()
+            update_module=update_layer
         ).to(device)
         print(f"Modèle Nano-MoM créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
     elif args.model == "retnet":
@@ -167,16 +200,24 @@ def train(args):
 
     model.train()
     data_iter = iter(dataloader)
+    optimizer.zero_grad()
+
     
     pbar = tqdm(range(CONFIG["max_steps"]))
     for step in pbar:
         try:
             batch = next(data_iter)
         except StopIteration:
-            print("Fin du dataset atteinte.")
-            break
+            if step < CONFIG["max_steps"] - 100:
+                print(f"\nFlux interrompu prématurément à l'étape {step}. Redémarrage de l'itérateur...")
+                data_iter = iter(dataloader)
+                batch = next(data_iter)
+            else:
+                print("Fin du dataset atteinte.")
+                break
         except Exception as e:
             print(f"\nFichier corrompu détecté à l'étape {step}. Erreur: {e}")
+            data_iter = iter(dataloader)
             continue
             
         input_ids = batch["input_ids"].to(device)
@@ -186,25 +227,28 @@ def train(args):
         
         train_input = input_ids[:, :-1] 
         train_target = input_ids[:, 1:] 
-        optimizer.zero_grad()
         logits, aux_loss = model(train_input) 
         
         B, L, V = logits.shape
         task_loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
         loss = task_loss + 0.01 * aux_loss
+        loss = loss / CONFIG["gradient_accumulation_steps"]
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        if (step + 1) % CONFIG["gradient_accumulation_steps"] == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
         loss_history.append(task_loss.item())
         pbar.set_description(f"Loss: {task_loss.item():.4f}")
-        if (step + 1) % 1000 == 0:
-            torch.save(model.state_dict(), f"{args.model}_slimpajama_step{step+1}.pt")
+        if (step + 1) % 10000 == 0:
+            torch.save(model.state_dict(), f"{args.model}_new_gla_slimpajama_step{step+1}.pt")
             
-            generate_text(model, tokenizer, device)
+            #generate_text(model, tokenizer, device)
     os.makedirs("results", exist_ok=True)
     with open(f"results/loss_{run_name}.json", "w") as f:
         json.dump(loss_history, f)
-    print(f"Sauvegarde terminée.")
+    print(f"Sauvegarde terminée")
 
 def generate_text(model, tokenizer, device, prompt="Computer science is"):
     model.eval()

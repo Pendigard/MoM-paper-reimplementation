@@ -51,12 +51,12 @@ class LinearAttention(nn.Module):
 class GLAAttention(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_memories):
         super().__init__()
-        self.W_gate = nn.Linear(input_dim, hidden_dim * (num_memories + 1))
+        self.W_gate = nn.Linear(input_dim, hidden_dim)
 
     def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor, x_t : torch.Tensor) -> torch.Tensor:
         B, N, D, _ = M.shape
 
-        logits = self.W_gate(x_t).reshape(B, N, D)
+        logits = self.W_gate(x_t).reshape(B, 1, D)
         alpha = torch.sigmoid(logits).unsqueeze(-1)
 
         active_mask = torch.zeros(B, N, device=M.device)
@@ -71,18 +71,18 @@ class GLAAttention(nn.Module):
 class GDeltaAttention(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_memories):
         super().__init__()
-        self.W_gate = nn.Linear(input_dim, hidden_dim * 2 * (num_memories + 1))
+        self.W_gate = nn.Linear(input_dim, hidden_dim * 2)
 
     def forward(self, M : torch.Tensor, M_k : torch.Tensor, M_v : torch.Tensor, indices_update : torch.Tensor, x_t : torch.Tensor) -> torch.Tensor:
         B, N, D, _ = M.shape
 
-        gates = self.W_gate(x_t).reshape(B, N, D * 2)
+        gates = self.W_gate(x_t).reshape(B, 1, D * 2)
         alpha1, beta1 = torch.sigmoid(gates).chunk(2, dim=-1)
-        alpha = torch.sigmoid(alpha1).unsqueeze(2)
-        beta = torch.sigmoid(beta1).unsqueeze(2)
+        alpha = alpha1.unsqueeze(2)
+        beta = beta1.unsqueeze(2)
 
-        recall = torch.matmul(M_k.unsqueeze(2), M)
-        V = beta * M_v.unsqueeze(2)
+        recall = torch.matmul(M_k.unsqueeze(-1).transpose(-1, -2), M)
+        V = beta * M_v.unsqueeze(-2)
         recall_weighted = recall * alpha
 
         active_mask = torch.zeros(B, N, device=M.device)
@@ -90,7 +90,7 @@ class GDeltaAttention(nn.Module):
         mask = active_mask.view(B, N, 1, 1)
 
         bracket = V - recall_weighted
-        update = torch.matmul(M_k.unsqueeze(3), bracket)
+        update = torch.matmul(M_k.unsqueeze(-2).transpose(-1, -2), bracket)
         M_new_active = (alpha * M) + update
 
         return mask * M_new_active + (1 - mask) * M
