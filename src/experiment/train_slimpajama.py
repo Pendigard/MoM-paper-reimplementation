@@ -37,10 +37,10 @@ CONFIG = {
     "seq_len": 512,
     "batch_size": 4,
     "lr": 3e-4,
-    "max_steps": 100000,
+    "max_steps": 50000,
     "update_module": LinearAttention(),
     "dataset_name": "cerebras/SlimPajama-627B",
-    "gradient_accumulation_steps": 16
+    "gradient_accumulation_steps": 8
 }
 
 class MoMLLMss(nn.Module):
@@ -200,11 +200,11 @@ def train(args):
         loss_history.append(task_loss.item())
         pbar.set_description(f"Loss: {task_loss.item():.4f}")
         
-        if (step + 1) % 10000 == 0:
-            torch.save(model.state_dict(), f"{args.model}_new_gla_slimpajama_step{step+1}.pt")
+        if (step + 1) % 5000 == 0:
+            torch.save(model.state_dict(), f"{args.model}_gla__final_slimpajama_step{step+1}.pt")
             
     os.makedirs("results", exist_ok=True)
-    with open(f"results/loss_{run_name}.json", "w") as f:
+    with open(f"results/loss_final_{run_name}.json", "w") as f:
         json.dump(loss_history, f)
     print(f"Sauvegarde terminée")
 
