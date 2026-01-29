@@ -20,7 +20,7 @@ VRAC_PATH = "/users/nfs/Vrac/21400184/.cache_hf"
 os.environ["HF_HOME"] = VRAC_PATH
 os.environ["HF_DATASETS_CACHE"] = os.path.join(VRAC_PATH, "datasets")
 os.environ["TRANSFORMERS_CACHE"] = os.path.join(VRAC_PATH, "models")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.ERROR)
 
 from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
 from src.module.retnet import RetNetModule
@@ -36,48 +36,42 @@ CONFIG = {
     "top_k": 2,
     "seq_len": 512,
     "batch_size": 4,
-    "lr": 3e-4,
-    "max_steps": 50000,
+    "lr": 1e-4, # de base 3e-4 j'ai baissé pour la reprise
+    "max_steps": 50000, 
     "update_module": LinearAttention(),
     "dataset_name": "cerebras/SlimPajama-627B",
     "gradient_accumulation_steps": 8
 }
 
 def get_data_loader(tokenizer, config):
-    print(f"Chargement du dataset")
     data_files = sorted(glob.glob("/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/*.jsonl.zst"))
-    print(f"Fichiers trouvés : {len(data_files)}")
+    print(f"Dataset : {len(data_files)} fichiers trouvés.")
     
     dataset = load_dataset("json", data_files=data_files, split="train", streaming=False)
     dataset = dataset.shuffle(seed=42)
 
     def tokenize(examples):
-        outputs = tokenizer(
+        return tokenizer(
             examples["text"],
             truncation=True,
             max_length=config["seq_len"],
             padding="max_length",
         )
-        return outputs
 
     dataset = dataset.map(tokenize, batched=True, remove_columns=dataset.column_names)
     
     def collate_fn(batch):
-        input_ids = [torch.tensor(item['input_ids']) for item in batch]
-        input_ids = torch.stack(input_ids)
+        input_ids = torch.stack([torch.tensor(item['input_ids']) for item in batch])
         return {"input_ids": input_ids}
 
-    dataloader = DataLoader(dataset, batch_size=config["batch_size"], collate_fn=collate_fn, shuffle=True)
-    return dataloader
+    return DataLoader(dataset, batch_size=config["batch_size"], collate_fn=collate_fn, shuffle=True)
 
 def train(args):
-    run_name = f"{args.model}_mem{args.memories}"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
     tokenizer.pad_token = tokenizer.eos_token
-    
     CONFIG["vocab_size"] = len(tokenizer)
 
     if args.model == "mom":
@@ -86,7 +80,6 @@ def train(args):
             hidden_dim=CONFIG["hidden_dim"],     
             num_memories=CONFIG["num_memories"]
         )
-
         model = MoMLLM(
             vocab_size=CONFIG["vocab_size"],
             hidden_dim=CONFIG["hidden_dim"],
@@ -95,13 +88,22 @@ def train(args):
             num_layers=CONFIG["num_layers"],
             update_module=update_layer
         ).to(device)
-        print(f"Modèle Nano-MoM créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
     elif args.model == "retnet":
         model = RetNetModule(CONFIG).to(device)
-        print(f"Modèle RetNet créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
     elif args.model == "hgrn":
         model = HGRN(CONFIG).to(device)
-        print(f"Modèle HGRN créé: {sum(p.numel() for p in model.parameters())/1e6:.2f} Millions de paramètres")
+
+    start_step = 0
+    if args.checkpoint:
+        if os.path.exists(args.checkpoint):
+            print(f"Chargement poids : {args.checkpoint}")
+            model.load_state_dict(torch.load(args.checkpoint, map_location=device))
+            start_step = 50000
+            CONFIG["max_steps"] = 100000
+            print(f"Reprise step {start_step} -> {CONFIG['max_steps']}")
+        else:
+            print("Checkpoint introuvable. Exit.")
+            return
 
     dataloader = get_data_loader(tokenizer, CONFIG)
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["lr"])
@@ -112,8 +114,8 @@ def train(args):
     model.train()
     optimizer.zero_grad()
     
+    pbar = tqdm(range(start_step, CONFIG["max_steps"]), initial=start_step, total=CONFIG["max_steps"])
     data_iter = iter(dataloader)
-    pbar = tqdm(range(CONFIG["max_steps"]))
     
     for step in pbar:
         try:
@@ -123,9 +125,7 @@ def train(args):
             batch = next(data_iter)
             
         input_ids = batch["input_ids"].to(device)
-
-        if input_ids.dim() == 1:
-            input_ids = input_ids.unsqueeze(0)
+        if input_ids.dim() == 1: input_ids = input_ids.unsqueeze(0)
         
         train_input = input_ids[:, :-1] 
         train_target = input_ids[:, 1:] 
@@ -134,7 +134,11 @@ def train(args):
         
         B, L, V = logits.shape
         task_loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
-        loss = task_loss + 0.01 * aux_loss
+        
+        if isinstance(aux_loss, torch.Tensor) and aux_loss.item() != 0:
+            loss = task_loss + 0.01 * aux_loss
+        else:
+            loss = task_loss
         
         loss = loss / CONFIG["gradient_accumulation_steps"]
         loss.backward()
@@ -152,40 +156,14 @@ def train(args):
             torch.save(model.state_dict(), f"{args.model}_gla__final_slimpajama_step{step+1}.pt")
             
     os.makedirs("results", exist_ok=True)
-    with open(f"results/loss_final_{run_name}.json", "w") as f:
+    with open(f"results/loss_{args.model}_extended.json", "w") as f:
         json.dump(loss_history, f)
-    print(f"Sauvegarde terminée")
-
-def generate_text(model, tokenizer, device, prompt="Computer science is"):
-    model.eval()
-    ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        for _ in range(20):
-            outputs = model(ids)
-            if isinstance(outputs, tuple):
-                logits = outputs[0] 
-            else:
-                logits = outputs
-            last_token_logits = logits[:, -1, :]
-            
-            if torch.isnan(last_token_logits).any():
-                print("aie")
-                break
-                
-            next_token = torch.argmax(last_token_logits, dim=-1).unsqueeze(0)
-            ids = torch.cat([ids, next_token], dim=1)
-    
-    if ids.shape[1] > 0:
-        print(f"Output: {tokenizer.decode(ids[0])}\n")
-    else:
-        print("Output: (Vide)\n")
-        
-    model.train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, choices=["mom", "retnet", "hgrn"], default="mom", help="Type de modèle à entraîner")
-    parser.add_argument("--memories", type=int, default=4, help="Nombre de mémoires pour MoM")
+    parser.add_argument("--model", type=str, required=True, choices=["mom", "retnet", "hgrn"])
+    parser.add_argument("--memories", type=int, default=4)
+    parser.add_argument("--checkpoint", type=str, default=None)
+    
     args = parser.parse_args()
     train(args)

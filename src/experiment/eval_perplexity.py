@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import argparse
 import string
+import math
 import re
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -63,12 +64,12 @@ def get_model(model_name, device):
     
     return model.to(device)
 
-def calcul_perplexity(path, model_name, num_samples = 500):
+def calcul_perplexity(data_path, path, model_name, num_samples = 500):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
     tokenizer.pad_token = tokenizer.eos_token
 
-    model = get_model(model_name)
+    model = get_model(model_name,device)
 
     try:
         state_dict = torch.load(path, map_location = device)
@@ -80,8 +81,8 @@ def calcul_perplexity(path, model_name, num_samples = 500):
     model.eval()
 
     print("Chargement du dataset")
-    dataset = load_dataset(CONFIG["dataset_name"], split="validation", streaming=True)
-    dataset = dataset.take(num_samples)
+    dataset = load_dataset("json", data_files=data_path, split="train", streaming=False)
+    dataset = dataset.shuffle(seed=42).select(range(num_samples))
 
     total_loss = 0
     total_token = 0
@@ -89,14 +90,14 @@ def calcul_perplexity(path, model_name, num_samples = 500):
     print("Calcul de la perplexité")
 
     with torch.no_grad():
-        for i, exemple in enumerate(tqdm(dataset))
+        for i, exemple in enumerate(tqdm(dataset)):
             if len(exemple["text"]) < 50 :
                 continue
         
             inputs = tokenizer(
-                exemple["text"]
+                exemple["text"],
                 return_tensors="pt",
-                truncation=True
+                truncation=True,
                 max_length=CONFIG["seq_len"]
 
             ).to(device)
@@ -105,8 +106,47 @@ def calcul_perplexity(path, model_name, num_samples = 500):
 
             targets = input_ids.clone()
 
-            outputs = model(input_ids)
+            logits = model(input_ids)[0]
             shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = targets[..., :-1, :].contiguous()
+            shift_labels = targets[..., :-1:].contiguous()
 
-            loss = criterion
+            loss = criterion(shift_logits.view(-1, CONFIG["vocab_size"]), shift_labels.view(-1))
+            non_pad_tokens = (shift_labels != tokenizer.pad_token_id).sum().item()
+            total_loss += loss.item()
+            total_token += non_pad_tokens
+
+    if total_token == 0:
+        print("Aucun token valide trouvé aie aie aie")
+        return
+    avg_loss = total_loss/total_token
+
+    perplexity = math.exp(avg_loss)    
+    print("Résultats")
+    print(f"Cross Entropy Loss :{avg_loss:.4f}")
+    print(f"Perplexité : {perplexity:.2f}")
+
+if __name__ == "__main__":
+
+    DATA_FILE = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/example_train_1015.jsonl.zst"
+    calcul_perplexity(
+        DATA_FILE,
+        path = "mom_gla__final_slimpajama_step50000.pt",
+        model_name = "mom",
+        num_samples = 500
+    )
+
+    calcul_perplexity(
+        DATA_FILE,
+        path = "hgrn_gla__final_slimpajama_step50000.pt",
+        model_name = "hgrn",
+        num_samples = 500
+    )
+
+    calcul_perplexity(
+        DATA_FILE,
+        path = "retnet_gla__final_slimpajama_step50000.pt",
+        model_name = "retnet",
+        num_samples = 500
+    )
+
+
