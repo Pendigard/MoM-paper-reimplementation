@@ -43,58 +43,6 @@ CONFIG = {
     "gradient_accumulation_steps": 8
 }
 
-class MoMLLMss(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config 
-        self.embedding = nn.Embedding(config["vocab_size"], config["dim"])
-        self.layers = nn.ModuleList([])
-        for _ in range(config["num_layers"]):
-            self.layers.append(
-                MoM(
-                    input_dim=config["dim"], 
-                    hidden_dim=config["hidden_dim"], 
-                    num_memories=config["num_memories"], 
-                    k=config["top_k"],
-                    update_module=GDeltaAttention(
-                        input_dim=config["dim"],
-                        hidden_dim=config["dim"],
-                        num_memories=config["num_memories"]
-                    )
-                )
-            )
-        self.norm = nn.LayerNorm(config["dim"])
-        self.head = nn.Linear(config["dim"], config["vocab_size"], bias=False)
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.zeros_(module.bias)
-            torch.nn.init.ones_(module.weight)
-
-    def forward(self, input_ids):
-        x = self.embedding(input_ids).transpose(0, 1)
-        M = torch.zeros(
-            self.config["dim"], 
-            self.config["dim"], 
-            device=x.device
-        )
-        total_aux_loss = 0.0
-        for layer in self.layers:
-            out_mom, M_new, aux = layer(x, M.clone())
-            x = x + out_mom 
-            total_aux_loss += aux
-        x = x.transpose(0, 1)
-        x = self.norm(x)
-        logits = self.head(x)
-        return logits, total_aux_loss
-
 def get_data_loader(tokenizer, config):
     print(f"Chargement du dataset")
     data_files = sorted(glob.glob("/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/*.jsonl.zst"))

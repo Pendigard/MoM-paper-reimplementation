@@ -1,0 +1,112 @@
+import sys
+import os
+import torch
+import torch.nn as nn
+import argparse
+import string
+import re
+from tqdm import tqdm
+from transformers import AutoTokenizer
+from datasets import load_dataset
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(os.path.dirname(current_dir))
+sys.path.append(root_dir)
+
+from src.module.retnet import RetNetModule
+
+CONFIG = {
+    "vocab_size": 32000,
+    "dim": 256,
+    "num_layers": 4,
+    "num_memories": 4,
+    "hidden_dim": 256,
+    "top_k": 2,
+    "seq_len": 512,
+    "batch_size": 4,
+    "lr": 3e-4,
+    "max_steps": 50000,
+    "dataset_name": "cerebras/SlimPajama-627B",
+}
+
+
+from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
+from src.module.retnet import RetNetModule
+from src.module.hgrn import HGRN
+from src.module.mom_llm import MoMLLM
+
+def get_model(model_name, device):
+    if model_name== "mom":
+        print("MoM")
+        update_layer = GLAAttention(
+            input_dim=CONFIG["dim"],      
+            hidden_dim=CONFIG["hidden_dim"],     
+            num_memories=CONFIG["num_memories"]
+        )
+
+        model = MoMLLM(
+            vocab_size=CONFIG["vocab_size"],
+            hidden_dim=CONFIG["hidden_dim"],
+            num_memories=CONFIG["num_memories"],
+            k=CONFIG["top_k"],
+            num_layers=CONFIG["num_layers"],
+            update_module=update_layer
+        ).to(device)
+    elif model_name == "retnet":
+        print("RetNet")
+        model = RetNetModule(CONFIG)
+    elif model_name == "hgrn":
+        print("HGRN")
+        model = HGRN(CONFIG)
+    else :
+        raise ValueError(f"Type de modèle inconnu")
+    
+    return model.to(device)
+
+def calcul_perplexity(path, model_name, num_samples = 500):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+    tokenizer.pad_token = tokenizer.eos_token
+
+    model = get_model(model_name)
+
+    try:
+        state_dict = torch.load(path, map_location = device)
+        model.load_state_dict(state_dict)
+    except Exception as e : 
+        print ("Erreur lors du chargement des poids")
+        return
+
+    model.eval()
+
+    print("Chargement du dataset")
+    dataset = load_dataset(CONFIG["dataset_name"], split="validation", streaming=True)
+    dataset = dataset.take(num_samples)
+
+    total_loss = 0
+    total_token = 0
+    criterion = nn.CrossEntropyLoss(reduction="sum", ignore_index=tokenizer.pad_token_id)
+    print("Calcul de la perplexité")
+
+    with torch.no_grad():
+        for i, exemple in enumerate(tqdm(dataset))
+            if len(exemple["text"]) < 50 :
+                continue
+        
+            inputs = tokenizer(
+                exemple["text"]
+                return_tensors="pt",
+                truncation=True
+                max_length=CONFIG["seq_len"]
+
+            ).to(device)
+
+            input_ids = inputs["input_ids"]
+
+            targets = input_ids.clone()
+
+            outputs = model(input_ids)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = targets[..., :-1, :].contiguous()
+
+            loss = criterion

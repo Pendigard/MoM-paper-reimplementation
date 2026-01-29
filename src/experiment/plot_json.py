@@ -14,9 +14,9 @@ def smooth(scalars, weight=0.9):
 
 results_dir = "results"
 files = {
-    "MoM GLA IN": "loss_mom_mem4_gla_base.json", 
-    "MoM GLA OUT": "loss_mom_mem4.json",
-    "Retnet": "loss_retnet_mem4.json"
+    "MoM Final" : "loss_final_mom_mem4.json",
+    "Retnet": "loss_final_retnet_mem4.json",
+    "HGRN": "loss_final_hgrn_mem4.json"
 }
 
 plt.figure(figsize=(10, 6))
