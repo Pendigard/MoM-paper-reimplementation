@@ -14,7 +14,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(current_dir))
 sys.path.append(root_dir)
 
+from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
 from src.module.retnet import RetNetModule
+from src.module.hgrn import HGRN
+from src.module.mom_llm import MoMLLM
 
 CONFIG = {
     "vocab_size": 32000,
@@ -29,12 +32,6 @@ CONFIG = {
     "max_steps": 50000,
     "dataset_name": "cerebras/SlimPajama-627B",
 }
-
-
-from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAttention
-from src.module.retnet import RetNetModule
-from src.module.hgrn import HGRN
-from src.module.mom_llm import MoMLLM
 
 def get_model(model_name, device):
     if model_name== "mom":
@@ -70,12 +67,15 @@ def calcul_perplexity(data_path, path, model_name, num_samples = 500):
     tokenizer.pad_token = tokenizer.eos_token
 
     model = get_model(model_name,device)
+    checkpoint = torch.load(path, map_location = device, weights_only=False)
 
     try:
-        state_dict = torch.load(path, map_location = device)
-        model.load_state_dict(state_dict)
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else :
+            model.load_state_dict(checkpoint)
     except Exception as e : 
-        print ("Erreur lors du chargement des poids")
+        print (f"ERREUR FATALE lors du chargement : {e}")
         return
 
     model.eval()
@@ -127,24 +127,24 @@ def calcul_perplexity(data_path, path, model_name, num_samples = 500):
 
 if __name__ == "__main__":
 
-    DATA_FILE = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/example_train_1015.jsonl.zst"
-    calcul_perplexity(
-        DATA_FILE,
-        path = "mom_gla__final_slimpajama_step50000.pt",
-        model_name = "mom",
-        num_samples = 500
-    )
+    DATA_FILE = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/valid/example_train_1026.jsonl.zst"
+    # calcul_perplexity(
+    #     DATA_FILE,
+    #     path = "mom_gla__final_slimpajama_step100000.pt",
+    #     model_name = "mom",
+    #     num_samples = 500
+    # )
+
+    # calcul_perplexity(
+    #     DATA_FILE,
+    #     path = "hgrn_gla__final_slimpajama_step50000.pt",
+    #     model_name = "hgrn",
+    #     num_samples = 500
+    # )
 
     calcul_perplexity(
         DATA_FILE,
-        path = "hgrn_gla__final_slimpajama_step50000.pt",
-        model_name = "hgrn",
-        num_samples = 500
-    )
-
-    calcul_perplexity(
-        DATA_FILE,
-        path = "retnet_gla__final_slimpajama_step50000.pt",
+        path = "retnet_gla__final_slimpajama_step100000.pt",
         model_name = "retnet",
         num_samples = 500
     )

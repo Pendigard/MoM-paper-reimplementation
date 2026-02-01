@@ -16,7 +16,8 @@ results_dir = "results"
 files = {
     "MoM Final" : "loss_final_mom_mem4.json",
     "Retnet": "loss_final_retnet_mem4.json",
-    "HGRN": "loss_final_hgrn_mem4.json"
+    "HGRN": "loss_final_hgrn_mem4.json",
+    "TransformerPP": "loss_transformer_pp_history.json",
 }
 
 plt.figure(figsize=(10, 6))
@@ -37,5 +38,5 @@ plt.title("Pretraining loss")
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.yscale("log")
-plt.savefig("repro_figure_7.png")
-print("Graphique généré : repro_figure_7.png")
+plt.savefig("test.png")
+print("ok")

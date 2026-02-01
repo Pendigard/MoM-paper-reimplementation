@@ -34,7 +34,7 @@ CONFIG = {
 }
 
 def train_model(model, name, config):
-    print(f"--- Entraînement de {name} ---")
+    print(f"Entraînement de {name}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
