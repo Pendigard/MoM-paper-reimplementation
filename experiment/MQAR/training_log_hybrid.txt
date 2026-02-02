@@ -1,0 +1,79 @@
+Using device: cuda
+
+=== Séquence longueur: 10, Batch size: 32, num_queries: 5 ===
+MoM_10 Parameters: 2036248
+MoM_10 Test Accuracy: 15.27%
+MoM_10 Test Loss: 2.9544
+MoM-Hybrid_10 Parameters: 1870482
+MoM-Hybrid_10 Test Accuracy: 15.41%
+MoM-Hybrid_10 Test Loss: 2.9379
+Transformer_10 Parameters: 844544
+Transformer_10 Test Accuracy: 15.72%
+Transformer_10 Test Loss: 2.9240
+GLA_10 Parameters: 854912
+GLA_10 Test Accuracy: 15.09%
+GLA_10 Test Loss: 3.0714
+DeltaNet_10 Parameters: 850560
+DeltaNet_10 Test Accuracy: 13.78%
+DeltaNet_10 Test Loss: 3.5134
+Transformer_10_expanded Parameters: 3261952
+Transformer_10_expanded Test Accuracy: 16.07%
+Transformer_10_expanded Test Loss: 2.5537
+GLA_10_expanded Parameters: 3282688
+GLA_10_expanded Test Accuracy: 15.12%
+GLA_10_expanded Test Loss: 2.8692
+DeltaNet_10_expanded Parameters: 3273984
+DeltaNet_10_expanded Test Accuracy: 15.09%
+DeltaNet_10_expanded Test Loss: 2.9769
+
+=== Séquence longueur: 20, Batch size: 32, num_queries: 10 ===
+MoM_20 Parameters: 2036248
+MoM_20 Test Accuracy: 11.52%
+MoM_20 Test Loss: 3.4161
+MoM-Hybrid_20 Parameters: 1870482
+MoM-Hybrid_20 Test Accuracy: 11.45%
+MoM-Hybrid_20 Test Loss: 3.3834
+Transformer_20 Parameters: 844544
+Transformer_20 Test Accuracy: 10.85%
+Transformer_20 Test Loss: 3.5425
+GLA_20 Parameters: 854912
+GLA_20 Test Accuracy: 10.34%
+GLA_20 Test Loss: 3.7846
+DeltaNet_20 Parameters: 850560
+DeltaNet_20 Test Accuracy: 9.87%
+DeltaNet_20 Test Loss: 3.8648
+Transformer_20_expanded Parameters: 3261952
+Transformer_20_expanded Test Accuracy: 11.60%
+Transformer_20_expanded Test Loss: 3.1644
+GLA_20_expanded Parameters: 3282688
+GLA_20_expanded Test Accuracy: 11.34%
+GLA_20_expanded Test Loss: 3.4410
+DeltaNet_20_expanded Parameters: 3273984
+DeltaNet_20_expanded Test Accuracy: 11.00%
+DeltaNet_20_expanded Test Loss: 3.4210
+
+=== Séquence longueur: 40, Batch size: 32, num_queries: 20 ===
+MoM_40 Parameters: 2036248
+MoM_40 Test Accuracy: 8.06%
+MoM_40 Test Loss: 3.7455
+MoM-Hybrid_40 Parameters: 1870482
+MoM-Hybrid_40 Test Accuracy: 8.23%
+MoM-Hybrid_40 Test Loss: 3.7469
+Transformer_40 Parameters: 844544
+Transformer_40 Test Accuracy: 7.87%
+Transformer_40 Test Loss: 3.9262
+GLA_40 Parameters: 854912
+GLA_40 Test Accuracy: 7.07%
+GLA_40 Test Loss: 4.1160
+DeltaNet_40 Parameters: 850560
+DeltaNet_40 Test Accuracy: 7.18%
+DeltaNet_40 Test Loss: 4.0616
+Transformer_40_expanded Parameters: 3261952
+Transformer_40_expanded Test Accuracy: 8.36%
+Transformer_40_expanded Test Loss: 3.6000
+GLA_40_expanded Parameters: 3282688
+GLA_40_expanded Test Accuracy: 8.10%
+GLA_40_expanded Test Loss: 3.7832
+DeltaNet_40_expanded Parameters: 3273984
+DeltaNet_40_expanded Test Accuracy: 8.02%
+DeltaNet_40_expanded Test Loss: 3.7211

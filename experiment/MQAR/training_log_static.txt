@@ -1,0 +1,61 @@
+Using device: cuda
+
+Training with a static dataloader of 5000 elements
+
+=== Séquence longueur: 10, Batch size: 32, num_queries: 5 ===
+MoM_10 Parameters: 2036248
+MoM_10 Test Accuracy: 13.80%
+MoM_10 Test Loss: 4.7659
+Transformer_10 Parameters: 844544
+Transformer_10 Test Accuracy: 13.68%
+Transformer_10 Test Loss: 3.6375
+GLA_10 Parameters: 854912
+GLA_10 Test Accuracy: 11.04%
+GLA_10 Test Loss: 5.4011
+DeltaNet_10 Parameters: 850560
+DeltaNet_10 Test Accuracy: 2.97%
+DeltaNet_10 Test Loss: 14.0905
+Transformer_10_expanded Parameters: 3261952
+Transformer_10_expanded Test Accuracy: 13.00%
+Transformer_10_expanded Test Loss: 4.6817
+GLA_10_expanded Parameters: 3282688
+GLA_10_expanded Test Accuracy: 10.09%
+GLA_10_expanded Test Loss: 8.6848
+DeltaNet_10_expanded Parameters: 3273984
+DeltaNet_10_expanded Test Accuracy: 8.55%
+DeltaNet_10_expanded Test Loss: 11.1903
+
+=== Séquence longueur: 20, Batch size: 32, num_queries: 10 ===
+MoM_20 Parameters: 2036248
+MoM_20 Test Accuracy: 9.87%
+MoM_20 Test Loss: 4.6071
+Transformer_20 Parameters: 844544
+Transformer_20 Test Accuracy: 9.25%
+Transformer_20 Test Loss: 3.9026
+GLA_20 Parameters: 854912
+GLA_20 Test Accuracy: 4.53%
+GLA_20 Test Loss: 5.2800
+DeltaNet_20 Parameters: 850560
+DeltaNet_20 Test Accuracy: 3.23%
+DeltaNet_20 Test Loss: 8.2939
+Transformer_20_expanded Parameters: 3261952
+Transformer_20_expanded Test Accuracy: 8.81%
+Transformer_20_expanded Test Loss: 4.5871
+GLA_20_expanded Parameters: 3282688
+GLA_20_expanded Test Accuracy: 4.87%
+GLA_20_expanded Test Loss: 9.0002
+DeltaNet_20_expanded Parameters: 3273984
+DeltaNet_20_expanded Test Accuracy: 5.06%
+DeltaNet_20_expanded Test Loss: 11.9870
+
+=== Séquence longueur: 40, Batch size: 32, num_queries: 20 ===
+MoM_40 Parameters: 2036248
+MoM_40 Test Accuracy: 6.82%
+MoM_40 Test Loss: 4.5678
+Transformer_40 Parameters: 844544
+Transformer_40 Test Accuracy: 6.92%
+Transformer_40 Test Loss: 4.1102
+GLA_40 Parameters: 854912
+GLA_40 Test Accuracy: 3.72%
+GLA_40 Test Loss: 4.8455
+DeltaNet_40 Parameters: 850560
