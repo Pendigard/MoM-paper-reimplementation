@@ -26,6 +26,7 @@ from src.module.naive_mom import MoM, LinearAttention, GLAAttention, GDeltaAtten
 from src.module.retnet import RetNetModule
 from src.module.hgrn import HGRN
 from src.module.mom_llm import MoMLLM
+from src.module.transformer_pp import TransformerPP
 
 CONFIG = {
     "vocab_size": 32000,
@@ -36,7 +37,7 @@ CONFIG = {
     "top_k": 2,
     "seq_len": 512,
     "batch_size": 4,
-    "lr": 1e-4, # de base 3e-4 j'ai baissé pour la reprise
+    "lr": 3e-4, # de base 3e-4 j'ai baissé pour la reprise
     "max_steps": 50000, 
     "update_module": LinearAttention(),
     "dataset_name": "cerebras/SlimPajama-627B",
@@ -44,9 +45,7 @@ CONFIG = {
 }
 
 def get_data_loader(tokenizer, config):
-    data_files = sorted(glob.glob("/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/*.jsonl.zst"))
-    print(f"Dataset : {len(data_files)} fichiers trouvés.")
-    
+    data_files = sorted(glob.glob("/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/*.jsonl.zst"))   
     dataset = load_dataset("json", data_files=data_files, split="train", streaming=False)
     dataset = dataset.shuffle(seed=42)
 
@@ -92,25 +91,31 @@ def train(args):
         model = RetNetModule(CONFIG).to(device)
     elif args.model == "hgrn":
         model = HGRN(CONFIG).to(device)
+    elif args.model == "transformer_pp":
+        model = TransformerPP(CONFIG).to(device)
 
-    start_step = 0
-    if args.checkpoint:
-        if os.path.exists(args.checkpoint):
-            print(f"Chargement poids : {args.checkpoint}")
-            model.load_state_dict(torch.load(args.checkpoint, map_location=device))
-            start_step = 50000
-            CONFIG["max_steps"] = 100000
-            print(f"Reprise step {start_step} -> {CONFIG['max_steps']}")
-        else:
-            print("Checkpoint introuvable. Exit.")
-            return
-
-    dataloader = get_data_loader(tokenizer, CONFIG)
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["lr"])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CONFIG["max_steps"], eta_min=1e-5)
-    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
     loss_history = []
 
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        print(f"Chargement du checkpoint : {args.checkpoint}")
+        checkpoint_data = torch.load(args.checkpoint, map_location=device)
+        
+        if "optimizer_state_dict" in checkpoint_data:
+            model.load_state_dict(checkpoint_data["model_state_dict"])
+            optimizer.load_state_dict(checkpoint_data["optimizer_state_dict"])
+            scheduler.load_state_dict(checkpoint_data["scheduler_state_dict"])
+            start_step = checkpoint_data["step"]
+            loss_history = checkpoint_data.get("loss_history", [])
+        else:
+            model.load_state_dict(checkpoint_data)
+            start_step = 50000
+    else:
+        start_step = 0
+
+    dataloader = get_data_loader(tokenizer, CONFIG)
+    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
     model.train()
     optimizer.zero_grad()
     
@@ -153,15 +158,26 @@ def train(args):
         pbar.set_description(f"Loss: {task_loss.item():.4f}")
         
         if (step + 1) % 5000 == 0:
-            torch.save(model.state_dict(), f"{args.model}_gla__final_slimpajama_step{step+1}.pt")
+            save_path = f"{args.model}_final_slimpajama_step{step+1}.pt"
             
-    os.makedirs("results", exist_ok=True)
-    with open(f"results/loss_{args.model}_extended.json", "w") as f:
-        json.dump(loss_history, f)
+            checkpoint_content = {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "step": step + 1,
+                "loss_history": loss_history,
+                "config": CONFIG
+            }
+            
+            torch.save(checkpoint_content, save_path)
+            
+            os.makedirs("results", exist_ok=True)
+            with open(f"results/loss_{args.model}_history.json", "w") as f:
+                json.dump(loss_history, f)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, choices=["mom", "retnet", "hgrn"])
+    parser.add_argument("--model", type=str, required=True, choices=["mom", "retnet", "hgrn", "transformer_pp"])
     parser.add_argument("--memories", type=int, default=4)
     parser.add_argument("--checkpoint", type=str, default=None)
     
