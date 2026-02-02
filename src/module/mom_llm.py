@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import src.module.mom_varlen as mom_varlen
 import src.module.naive_mom as naive_mom
+from src.module.llm import TransformerBlock
 from typing import Callable
 
 class MLP(nn.Module):
@@ -19,9 +20,10 @@ class MLP(nn.Module):
 
 
 class MoMLLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, *args, **kwargs):
+    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, update_module_args: tuple = (), output_size: int = None, *args, **kwargs):
         super().__init__()
         self.vocab_size = vocab_size
+        self.output_size = output_size if output_size is not None else vocab_size
         self.hidden_dim = hidden_dim
         self.num_memories = num_memories
         self.k = k
@@ -36,7 +38,8 @@ class MoMLLM(nn.Module):
                 hidden_dim=hidden_dim, 
                 num_memories=num_memories, 
                 k=k,
-                update_module=update_module or naive_mom.LinearAttention()
+                update_module=update_module,
+                update_module_args=update_module_args
             ) for _ in range(num_layers)
         ])
 
@@ -55,8 +58,7 @@ class MoMLLM(nn.Module):
         self.norms_2 = nn.ModuleList([
             layer_norm(hidden_dim) for _ in range(num_layers)
         ])
-        self.output_layer = nn.Linear(hidden_dim, vocab_size, bias=False)
-        # self.output_layer.weight = self.embedding.weight
+        self.output_layer = nn.Linear(hidden_dim, self.output_size, bias=False)
 
         self.apply(self._init_weights)
 
@@ -71,7 +73,51 @@ class MoMLLM(nn.Module):
             torch.nn.init.zeros_(module.bias)
             torch.nn.init.ones_(module.weight)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def get_scores(self, x: torch.Tensor):
+        x = self.embedding(x).transpose(0, 1)
+        M = torch.zeros(
+            self.hidden_dim,
+            self.hidden_dim,
+            device=x.device
+        )
+
+        scores = []
+        indices = []
+
+        for i, layer in enumerate(self.layers):
+            x_norm = self.norms_1[i](x)
+            score_l, indices_l = layer.get_scores_and_indices(x_norm, M.clone())
+            scores.append(score_l)
+            indices.append(indices_l)
+            layer_out, _, _ = layer(x_norm, M.clone())
+            x = x + layer_out
+            x = x + self.MLPs[i](self.norms_2[i](x).transpose(0, 1)).transpose(0, 1)
+        scores = torch.stack(scores, dim=0)  # (num_layers, seq_len, batch_size, num_memories)
+        indices = torch.stack(indices, dim=0)  # (num_layers, seq_len, batch_size, num_memories)
+        scores = scores.permute(0,2,1,3)  # (num_layers, batch_size, seq_len, num_memories)
+        indices = indices.permute(0,2,1,3)  # (num_layers, batch_size, seq_len, num_memories)
+        return scores, indices
+    
+    def get_hidden_states(self, x: torch.Tensor):
+        x = self.embedding(x).transpose(0, 1)
+        M = torch.zeros(
+            self.hidden_dim,
+            self.hidden_dim,
+            device=x.device
+        )
+
+        hidden_states = []
+
+        for i, layer in enumerate(self.layers):
+            x_norm = self.norms_1[i](x)
+            layer_out, _, _ = layer(x_norm, M.clone())
+            x = x + layer_out
+            x = x + self.MLPs[i](self.norms_2[i](x).transpose(0, 1)).transpose(0, 1)
+            hidden_states.append(x.transpose(0, 1))  # (batch_size, seq_len, hidden_dim)
+        hidden_states = torch.stack(hidden_states, dim=0)  # (num_layers, batch_size, seq_len, hidden_dim)
+        return hidden_states
+
+    def forward(self, input_ids: torch.Tensor, materialize_output: bool = True) -> torch.Tensor:
         x = self.embedding(input_ids).transpose(0, 1)
         total_aux_loss = 0.0
         
@@ -83,15 +129,104 @@ class MoMLLM(nn.Module):
 
         for i, layer in enumerate(self.layers):
             x_norm = self.norms_1[i](x)
-            layer_out, _, layer_loss = layer(x_norm, M)
+            layer_out, _, layer_loss = layer(x_norm, M.clone())
             total_aux_loss += layer_loss
             x = x + layer_out
             x = x + self.MLPs[i](self.norms_2[i](x).transpose(0, 1)).transpose(0, 1)
-        x = x.transpose(0, 1)
 
-        logits = self.output_layer(x)
-        return logits, total_aux_loss
-    
+        x = x.transpose(0, 1)
+        if materialize_output:
+            outputs = self.output_layer(x)
+            return outputs, total_aux_loss
+        else:
+            outputs = self.output_layer(x[:, -1, :])
+            return outputs, total_aux_loss
+
+
+
+class MoMHybridLLM(nn.Module):
+    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, output_size: int = None, *args, **kwargs):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.output_size = output_size if output_size is not None else vocab_size
+        self.hidden_dim = hidden_dim
+        self.num_memories = num_memories
+        self.k = k
+        self.num_layers = num_layers
+        self.mom_implem = mom_implem
+
+        self.embedding = nn.Embedding(num_embeddings=vocab_size, embedding_dim=hidden_dim)
+        
+        self.layers = nn.ModuleList([
+            mom_implem(
+                input_dim=hidden_dim, 
+                hidden_dim=hidden_dim, 
+                num_memories=num_memories, 
+                k=k,
+                update_module=update_module
+            ) for _ in range(num_layers - 1)
+        ])
+
+        self.layers.append(TransformerBlock(hidden_dim, num_heads=8, dropout=0.0, layer_norm=layer_norm))
+
+        self.MLPs = nn.ModuleList([
+            MLP(
+                input_dim=hidden_dim,
+                hidden_dim=hidden_dim * 4,
+                output_dim=hidden_dim,
+                activation=nn.GELU()
+            ) for _ in range(num_layers)
+        ])
+        
+        self.norms_1 = nn.ModuleList([
+            layer_norm(hidden_dim) for _ in range(num_layers)
+        ])
+        self.norms_2 = nn.ModuleList([
+            layer_norm(hidden_dim) for _ in range(num_layers)
+        ])
+        self.output_layer = nn.Linear(hidden_dim, self.output_size, bias=False)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.zeros_(module.bias)
+            torch.nn.init.ones_(module.weight)
+
+    def forward(self, input_ids: torch.Tensor, materialize_output: bool = True) -> torch.Tensor:
+        x = self.embedding(input_ids).transpose(0, 1)
+        total_aux_loss = 0.0
+        
+        M = torch.zeros(
+            self.hidden_dim,
+            self.hidden_dim,
+            device=x.device
+        )
+
+        for i, layer in enumerate(self.layers):
+            x_norm = self.norms_1[i](x)
+            if i == self.num_layers - 1:
+                layer_out = layer(x_norm)
+                layer_loss = 0.0
+            else:
+                layer_out, _, layer_loss = layer(x_norm, M.clone())
+            total_aux_loss += layer_loss
+            x = x + layer_out
+            x = x + self.MLPs[i](self.norms_2[i](x).transpose(0, 1)).transpose(0, 1)
+
+        x = x.transpose(0, 1)
+        if materialize_output:
+            outputs = self.output_layer(x)
+            return outputs, total_aux_loss
+        else:
+            outputs = self.output_layer(x[:, -1, :])
+            return outputs, total_aux_loss 
 
 if __name__ == "__main__":
     model = MoMLLM(
@@ -139,4 +274,3 @@ if __name__ == "__main__":
     )
 
     print(f"Model size: {sum(p.numel() for p in model_paper.layers.parameters())/1e6:.2f}M parameters")
-

@@ -1,17 +1,18 @@
 import itertools
 import logging
+import pandas as pd
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-import torch
 from typing import List
 from conllu import parse_incr
-from src.module.mom_pipeline import MoMPipeline
-import src.module.mom_varlen as mom_varlen
-import src.module.naive_mom as naive_mom
+from src.module.mom_llm import MoMLLM
+import src.module.naive_mom as nm
 
 logging.basicConfig(level=logging.INFO)
 
@@ -83,6 +84,7 @@ class TaggingDataset():
 
         for s in data:
                 self.sentences.append(([words.get(token["form"], adding) for token in s], [tags.get(token["upostag"], adding) for token in s]))
+
     def __len__(self):
         return len(self.sentences)
     def __getitem__(self, ix):
@@ -94,27 +96,35 @@ def collate_fn(batch):
     return tuple(pad_sequence([torch.LongTensor(b[j]) for b in batch]) for j in range(2))
 
 
-
-#  TODO:  Implémenter le modèle et la boucle d'apprentissage (en utilisant les LSTMs de pytorch)
-
-
-def test(model, data_test, loss_fn):
+def test(model, data_test, loss_fn, aux_loss_weight=0.01):
     device = next(model.parameters()).device
     model.eval()
     total_loss = 0.0
+    correct_total = 0
+    token_total = 0
     with torch.no_grad():
         for batch_x, batch_y in data_test:
-            batch_x = batch_x.to(device).long()
-            batch_y = batch_y.to(device).long()
+            batch_x = batch_x.to(device).long().permute(1, 0)  # (B, T)
+            batch_y = batch_y.to(device).long().permute(1, 0)  # (B, T)
 
-            output = model(batch_x)
-            out = output.permute(0, 2, 1)
-            loss = loss_fn(out, batch_y)
+
+            output, aux_loss = model(batch_x)
+            out = output.reshape(-1, output.size(-1))
+            target = batch_y.reshape(-1)
+            pred = torch.argmax(output, dim=2)
+
+            mask = batch_y != PAD_IX
+
+            correct = (pred == batch_y) & mask
+
+            correct_total += correct.sum().item()
+            token_total += mask.sum().item()
+            loss = loss_fn(out, target) + aux_loss_weight * aux_loss
             total_loss += loss.item()
     total_loss /= len(data_test)
-    return total_loss
+    return total_loss, correct_total / token_total if token_total > 0 else 0.0
 
-def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, writer=None, verbose=10, patience=10, device='cpu'):
+def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, writer=None, verbose=10, patience=10, device='cpu', aux_loss_weight=0.01):
     init_patience = patience
     pbar_epochs = tqdm(total=max_epochs, desc="Training (epochs)", position=0)
     best_valid_loss = float('inf')
@@ -124,20 +134,20 @@ def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, wri
 
         pbar_batches = tqdm(data_train, desc=f"Epoch {epoch+1}/{max_epochs}", position=1, leave=False)
         for batch_x, batch_y in pbar_batches:
-            batch_x = batch_x.to(device).long()
-            batch_y = batch_y.to(device)
+            batch_x = batch_x.to(device).long().permute(1, 0)  # (B, T)
+            batch_y = batch_y.to(device).permute(1, 0)  # (B, T)
             optimizer.zero_grad()
-            output = model(batch_x)
-            out = output.permute(0, 2, 1)
-            loss = loss_fn(out, batch_y)
+            output, aux_loss = model(batch_x)
+            out = output.reshape(-1, output.size(-1))
+            target = batch_y.reshape(-1)
+            loss = loss_fn(out, target) + aux_loss_weight * aux_loss
             epoch_loss += loss.item()
             loss.backward()
             optimizer.step()
 
             pbar_batches.set_postfix(batch_loss=f"{loss.item():.4f}")
 
-        
-        valid_loss = test(model, data_valid, loss_fn)
+        valid_loss, valid_accuracy = test(model, data_valid, loss_fn, aux_loss_weight)
 
         epoch_loss /= len(data_train)
         if writer:
@@ -146,7 +156,7 @@ def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, wri
 
 
         if verbose and (epoch + 1) % verbose == 0:
-            tqdm.write(f"Epoch {epoch+1}/{max_epochs} | mean_loss = {epoch_loss:.4f} | valid_loss = {valid_loss:.4f}")
+            tqdm.write(f"Epoch {epoch+1}/{max_epochs} | mean_loss = {epoch_loss:.4f} | valid_loss = {valid_loss:.4f} | valid_accuracy = {valid_accuracy:.2%}")
 
         pbar_epochs.set_postfix(mean_loss=f"{epoch_loss:.4f}")
         pbar_epochs.update(1)
@@ -164,113 +174,132 @@ def train(model, data_train, data_valid, loss_fn, optimizer, max_epochs=100, wri
     pbar_epochs.close()
     return model
 
-def compute_score(model, data_test, PAD_IX):
-    device = next(model.parameters()).device
+
+def get_mem_df(model: nn.Module, data_loader: DataLoader, num_samples: int = 1000):
     model.eval()
+    device = next(model.parameters()).device
 
-    correct_total = 0
-    token_total = 0
-
+    memories = []
     with torch.no_grad():
-        for batch_x, batch_y in data_test:
+        samples_processed = 0
+        for batch_x, batch_y in data_loader:
             batch_x = batch_x.to(device).long()
-            batch_y = batch_y.to(device).long()
+            B = batch_x.shape[1]
+            T = batch_x.shape[0]
 
-            output = model(batch_x)          # [B, T, C]
-            out = output.permute(0, 2, 1)    # [B, C, T]
+            batch_x = batch_x.transpose(0,1)  # (B, T)
+            batch_y = batch_y.transpose(0,1)  # (B, T)
 
-            pred = torch.argmax(out, dim=1)  # [B, T]
+            scores, indices = model.get_scores(batch_x)
+            hidden_states = model.get_hidden_states(batch_x)
+            for b in range(B):
+                for t in range(T):
+                    if samples_processed >= num_samples:
+                        return memories
+                    if batch_x[b, t].item() == PAD_IX:
+                        continue
+                    mem_entry = {
+                        "token_id": batch_x[b, t].item(),
+                        "time_step": t,
+                        "label_id": id2tag[batch_y[b, t].item()]
+                    }
+                    for layer in range(model.num_layers):
+                        _, max_idx = scores[layer, b, t].max(0)
+                        selected_memory = indices[layer, b, t, max_idx]
+                        mem_entry.update({
+                        f"score_{layer}": scores[layer, b, t].cpu().numpy(),
+                        f"memory_index_{layer}": indices[layer, b, t].cpu().numpy(),
+                        f"selected_memory_{layer}": selected_memory.item(),
+                        f"hidden_state_{layer}": hidden_states[layer, b, t].cpu().numpy(),
+                        })   
+                    memories.append(mem_entry)
+                    samples_processed += 1
+    return memories
 
-            # masque : True pour les vrais tokens, False pour le padding
-            mask = batch_y != PAD_IX         # [B, T]
-
-            # comptage correct uniquement sur les vrais tokens
-            correct = (pred == batch_y) & mask
-
-            correct_total += correct.sum().item()
-            token_total += mask.sum().item()
-
-    return correct_total / token_total if token_total > 0 else 0.0
-
-logging.info("Loading datasets...")
-words = Vocabulary(True)
-tags = Vocabulary(False)
-
-data_file = open(DATA_PATH+"fr_gsd-ud-train.conllu",encoding="utf-8")
-train_data = TaggingDataset(parse_incr(data_file), words, tags, True)
-
-data_file = open(DATA_PATH+"fr_gsd-ud-dev.conllu",encoding='utf-8')
-dev_data = TaggingDataset(parse_incr(data_file), words, tags, True)
-
-data_file = open(DATA_PATH+"fr_gsd-ud-test.conllu",encoding="utf-8")
-test_data = TaggingDataset(parse_incr(data_file), words, tags, False)
+if __name__ == "__main__":
+    logging.info("Loading datasets...")
+    words = Vocabulary(True)
+    tags = Vocabulary(False)
 
 
-logging.info("Vocabulary size: %d", len(words))
+    data_file = open(DATA_PATH+"fr_gsd-ud-train.conllu",encoding="utf-8")
+    train_data = TaggingDataset(parse_incr(data_file), words, tags, True)
+
+    data_file = open(DATA_PATH+"fr_gsd-ud-dev.conllu",encoding='utf-8')
+    dev_data = TaggingDataset(parse_incr(data_file), words, tags, True)
+
+    data_file = open(DATA_PATH+"fr_gsd-ud-test.conllu",encoding="utf-8")
+    test_data = TaggingDataset(parse_incr(data_file), words, tags, False)
 
 
-BATCH_SIZE=100
+    logging.info("Vocabulary size: %d", len(words))
 
-train_loader = DataLoader(train_data, collate_fn=collate_fn, batch_size=BATCH_SIZE, shuffle=True)
-dev_loader = DataLoader(dev_data, collate_fn=collate_fn, batch_size=BATCH_SIZE)
-test_loader = DataLoader(test_data, collate_fn=collate_fn, batch_size=BATCH_SIZE)
+    id2tag = {idx: tag for tag, idx in tags.word2id.items()}
 
-print("Data loaded.")
 
-PAD_IX = words.PAD
+    BATCH_SIZE=100
 
-class LSTMPipeline(nn.Module):
-    def __init__(self, input_dim, embedding_dim, hidden_dim, output_dim):
-        super(LSTMPipeline, self).__init__()
-        self.embedding = nn.Embedding(input_dim, embedding_dim, padding_idx=PAD_IX)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True, bidirectional=True)
-        self.fc = nn.Linear(hidden_dim * 2, output_dim)
+    train_loader = DataLoader(train_data, collate_fn=collate_fn, batch_size=BATCH_SIZE, shuffle=True)
+    dev_loader = DataLoader(dev_data, collate_fn=collate_fn, batch_size=BATCH_SIZE)
+    test_loader = DataLoader(test_data, collate_fn=collate_fn, batch_size=BATCH_SIZE)
 
-    def forward(self, x):
-        embedded = self.embedding(x)
-        lstm_out, _ = self.lstm(embedded)
-        output = self.fc(lstm_out)
-        return output
+    print("Data loaded.")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logging.info(f"Using device: {device}")
+    PAD_IX = words.PAD
 
-use_triton = True
-PoSTagger = MoMPipeline(
-    input_dim=len(words),
-    embedding_dim=32,
-    hidden_dim=64,
-    output_dim=len(tags),
-    num_memories=5,
-    k=2,
-    output_activation=nn.ReLU(),
-    mom_implementation = naive_mom.MoM if use_triton == False else mom_varlen.MoM,
-    update_module = naive_mom.LinearAttention() if use_triton == False else mom_varlen.LinearAttentionVarlenModule(use_triton = True)
-    ).to(device)
+    model = MoMLLM(
+        vocab_size=len(words),
+        hidden_dim=64,
+        num_memories=4,
+        k=2,
+        num_layers=2,
+        mom_implem=nm.MoM,
+        layer_norm=nn.LayerNorm,
+        update_module=nm.GLAAttention,
+        update_module_args=(64, 64, 4),
+        output_size=len(tags)
+    )
 
-# PoSTagger = LSTMPipeline(
-#     input_dim=len(words),
-#     embedding_dim=64,
-#     hidden_dim=128,
-#     output_dim=len(tags)
-#     )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
-# torch.autograd.set_detect_anomaly(True)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_IX)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    writer = SummaryWriter(log_dir="runs/pos_tagging_experiment")
+    train_flag = True
+    if train_flag:
+        logging.info("Starting training...")
+        model = train(
+            model,
+            train_loader,
+            dev_loader,
+            loss_fn,
+            optimizer,
+            max_epochs=50,
+            writer=writer,
+            verbose=5,
+            patience=5,
+            device=device,
+            aux_loss_weight=0.01
+        )
+    else:
+        logging.info("Loading pre-trained model...")
+        model.load_state_dict(torch.load("pos_tagging_mom_model.pth", map_location=device))
+        logging.info("Model loaded.")
 
-PoSTagger = train(
-    model=PoSTagger,
-    data_train=train_loader,
-    data_valid=dev_loader,
-    loss_fn=torch.nn.CrossEntropyLoss(ignore_index=PAD_IX),
-    optimizer=optim.Adam(PoSTagger.parameters(), lr=0.0001),
-    max_epochs=1000,
-    writer=SummaryWriter(log_dir="./logs/tagging"),
-    verbose=1,
-    patience=10,
-    device=device
-)
+    logging.info("Evaluating on test set...")
+    test_loss, test_accuracy = test(model, test_loader, loss_fn)
+    logging.info(f"Test Loss: {test_loss:.4f} | Test Accuracy: {test_accuracy:.2%}")
+    writer.close()
 
-test_loss = test(PoSTagger, test_loader, torch.nn.CrossEntropyLoss(ignore_index=PAD_IX))
-test_accuracy = compute_score(PoSTagger, test_loader, PAD_IX)
-logging.info(f"Test loss: {test_loss:.4f}")
-logging.info(f"Test accuracy: {test_accuracy:.4%}")
+
+    logging.info("Saving model...")
+    torch.save(model.state_dict(), "pos_tagging_mom_model.pth")
+    logging.info("Model saved to pos_tagging_mom_model.pth")
+
+    logging.info("Extracting memory data...")
+    mem_data = get_mem_df(model, train_loader, num_samples=10000)
+    mem_df = pd.DataFrame(mem_data)
+    mem_df.to_pickle("pos_tagging_memory_data.pkl")
+    logging.info("Memory data saved to pos_tagging_memory_data.pkl")
+
