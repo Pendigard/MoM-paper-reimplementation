@@ -14,10 +14,11 @@ def smooth(scalars, weight=0.9):
 
 results_dir = "results"
 files = {
-    "MoM Final" : "loss_final_mom_mem4.json",
+    "MoM GLA Final" : "loss_final_mom_mem4.json",
     "Retnet": "loss_final_retnet_mem4.json",
     "HGRN": "loss_final_hgrn_mem4.json",
     "TransformerPP": "loss_transformer_pp_history.json",
+    "MoM GDeltaNet Final" : "loss_mom_gdelta_history.json"
 }
 
 plt.figure(figsize=(10, 6))

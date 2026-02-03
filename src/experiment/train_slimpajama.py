@@ -74,18 +74,14 @@ def train(args):
     CONFIG["vocab_size"] = len(tokenizer)
 
     if args.model == "mom":
-        update_layer = GLAAttention(
-            input_dim=CONFIG["dim"],      
-            hidden_dim=CONFIG["hidden_dim"],     
-            num_memories=CONFIG["num_memories"]
-        )
         model = MoMLLM(
             vocab_size=CONFIG["vocab_size"],
             hidden_dim=CONFIG["hidden_dim"],
             num_memories=CONFIG["num_memories"],
             k=CONFIG["top_k"],
             num_layers=CONFIG["num_layers"],
-            update_module=update_layer
+            update_module=GDeltaAttention,
+            update_module_args=(CONFIG["dim"], CONFIG["hidden_dim"], CONFIG["num_memories"])
         ).to(device)
     elif args.model == "retnet":
         model = RetNetModule(CONFIG).to(device)
@@ -100,7 +96,7 @@ def train(args):
 
     if args.checkpoint and os.path.exists(args.checkpoint):
         print(f"Chargement du checkpoint : {args.checkpoint}")
-        checkpoint_data = torch.load(args.checkpoint, map_location=device)
+        checkpoint_data = torch.load(args.checkpoint, map_location=device, weights_only=False)
         
         if "optimizer_state_dict" in checkpoint_data:
             model.load_state_dict(checkpoint_data["model_state_dict"])
@@ -158,7 +154,7 @@ def train(args):
         pbar.set_description(f"Loss: {task_loss.item():.4f}")
         
         if (step + 1) % 5000 == 0:
-            save_path = f"{args.model}_final_slimpajama_step{step+1}.pt"
+            save_path = f"{args.model}_gdelta_final_slimpajama_step{step+1}.pt"
             
             checkpoint_content = {
                 "model_state_dict": model.state_dict(),
@@ -172,7 +168,7 @@ def train(args):
             torch.save(checkpoint_content, save_path)
             
             os.makedirs("results", exist_ok=True)
-            with open(f"results/loss_{args.model}_history.json", "w") as f:
+            with open(f"results/loss_{args.model}_gdelta_history.json", "w") as f:
                 json.dump(loss_history, f)
 
 if __name__ == "__main__":
