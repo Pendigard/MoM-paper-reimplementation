@@ -8,7 +8,7 @@ import src.module.mom_varlen.update_module as umv
 import src.module.mom_varlen.mom_fast as mom_varlen
 import src.module.naive_mom as naive_mom
 import torch.nn as nn
-from src.utils.benchmark_utils import cuda_time_and_memory
+from src.utils.benchmark_utils import cuda_time_ms
 import numpy as np
 
 
@@ -23,7 +23,8 @@ CONFIG = {
     "warmup": 100,
     "iters": 100,
     "context_lengths": [1024, 2048, 4096, 8192],
-    "update_module": umv.LinearAttentionVarlenModule(use_triton=True, no_grad=True) # umv.LinearAttentionVarlenModule(use_triton=True, no_grad=True), # 
+    "update_module": umv.LinearAttentionVarlenModule, # umv.LinearAttentionVarlenModule(use_triton=True, no_grad=True), # 
+    "update_module_args": (True,) # (True,) for triton, (False,) for pure PyTorch
 }
 
 def causal_mask_triu_bool(seq_len: int, device: torch.device) -> torch.Tensor:
@@ -93,16 +94,15 @@ def benchmark_model(
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-        t_ms, mem = cuda_time_and_memory(fn, warmup=warmup, iters=iters)
+        t_ms = cuda_time_ms(fn, warmup=warmup, iters=iters)
         times_ms.append(t_ms)
-        mem_allocs.append(mem / (1024**2))
 
-        print(f"T={T:5d} | {name:12s} | {t_ms:8.2f} ms | {mem / (1024**2):8.2f} MB")
+        print(f"T={T:5d} | {name:12s} | {t_ms:8.2f} ms/iter")
 
         del input_ids, mask, fn
         torch.cuda.synchronize()
 
-    return times_ms, mem_allocs
+    return times_ms
 
 
 if __name__ == "__main__":
@@ -125,6 +125,7 @@ if __name__ == "__main__":
         mom_implem=mom_varlen.MoM,
         layer_norm=nn.LayerNorm,
         update_module=CONFIG["update_module"],
+        update_module_args=CONFIG["update_module_args"],
     ).to(device).eval()
 
     naive_momLLM = MoMLLM(
@@ -135,11 +136,10 @@ if __name__ == "__main__":
         num_layers=CONFIG["num_layers"],
         mom_implem=naive_mom.MoM,
         layer_norm=nn.LayerNorm,
-        update_module=naive_mom.LinearAttention(),
+        update_module=naive_mom.LinearAttention,
     ).to(device).eval()
 
     end_mem = torch.cuda.memory_allocated(device=device) / (1024**2)
-    print(f"Model allocation: {end_mem - begin_mem:.2f} MB")
 
     context_lengths = CONFIG["context_lengths"]
 
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     #     CONFIG["iters"],
     # )
 
-    times_mom, mem_mom = benchmark_model(
+    times_mom = benchmark_model(
         "MoMLLM",
         mom_factory,
         CONFIG["vocab_size"],
@@ -180,7 +180,7 @@ if __name__ == "__main__":
         CONFIG["iters"],
     )
     
-    times_transformer, mem_transformer = benchmark_model(
+    times_transformer = benchmark_model(
         "TransformerLLM",
         transformer_factory,
         CONFIG["vocab_size"],
@@ -197,12 +197,4 @@ if __name__ == "__main__":
         "Forward Pass Time vs Context Length",
         "Time per Forward Pass (ms)",
         "forward_pass_time_comparison.png",
-    )
-
-    plot_series(
-        context_lengths,
-        {"TransformerLLM": mem_transformer, "MoMLLM": mem_mom},
-        "Peak Memory Usage vs Context Length",
-        "Peak Memory Usage (MB)",
-        "peak_memory_usage_comparison.png",
     )
