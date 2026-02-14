@@ -4,8 +4,7 @@ from typing import Dict, Tuple, Optional, Callable
 import time
 import triton
 import triton.language as tl
-from src.module.update_module import LinearAttentionVarlenModule
-from src.module.update_module_varlen import LinearAttentionVarlenModule as lavm
+from src.module.mom_varlen.update_module import LinearAttentionVarlenModule
 # from src.utils.benchmark_utils import cuda_time_ms, cuda_time_and_memory
 import src.module.naive_mom as naive_mom
 import src.module.mom_varlen as mvo
@@ -22,7 +21,7 @@ def first_idx(tensor: torch.Tensor) -> torch.Tensor:
     return first_idx
 
 class MoM(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, num_memories: int, k: int, update_module: nn.Module = None, *args, **kwargs):
+    def __init__(self, input_dim: int, hidden_dim: int, num_memories: int, k: int, update_module: nn.Module = None, update_module_args: tuple = (), *args, **kwargs):
         """
         @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation varlen optimisée avec triton.
         @param input_dim: Dimension de l'entrée x.
@@ -43,7 +42,7 @@ class MoM(nn.Module):
         self.W_g = nn.Linear(input_dim, num_memories)
         self.W_q = nn.Linear(input_dim, hidden_dim)
 
-        self.update_module = update_module or LinearAttentionVarlenModule(use_triton=True)
+        self.update_module = update_module(*update_module_args) if update_module is not None else LinearAttentionVarlenModule(*update_module_args)
         self.softmax = nn.Softmax(dim=-1)
 
     def build_varlen_pack(self, indices: torch.Tensor, scores: torch.Tensor, T : int, B : int, device: torch.device) -> Dict[str, torch.Tensor]:
@@ -130,67 +129,14 @@ class MoM(nn.Module):
 
         pack = self.build_varlen_pack(m_indices_update, m_scores_update, T, B, X.device)
 
-        print(torch.cuda.memory_allocated() / (1024 ** 2), "MB allocated before MoM kernel")
         k = self.W_k(X).reshape(T, B, self.num_memories + 1, self.hidden_dim)
         v = self.W_v(X).reshape(T, B, self.num_memories + 1, self.hidden_dim)
         q = self.W_q(X)
-        print(torch.cuda.memory_allocated() / (1024 ** 2), "MB allocated after MoM prep")
 
-        o = self.update_module(q, k, v, M0, pack, X)
+        o = self.update_module(q, k, v, M0, pack)
 
         return o, None, aux_loss / T
 
 
 
-if __name__ == "__main__":
-    # Test rapide du module MoM varlen
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    T, B, Din = 2, 2, 2
-    d = 8
-    M = 5
-    k = 3
-
-    X = torch.randn(T, B, Din).to(device)
-    M0 = torch.zeros(d, d).to(device)
-
-    mom_varlen = MoM(Din, d, M, k, update_module=LinearAttentionVarlenModule(use_triton=True)).to(device)
-
-    naive_mom_module = naive_mom.MoMRef(Din, d, M, k, update_module=naive_mom.LinearAttention()).to(device)
-
-    mom_varlen_old = mvo.MoM(Din, d, M, k, update_module=lavm(use_triton=True)).to(device)
-
-    naive_mom_module.load_state_dict(mom_varlen.state_dict())
-
-    mom_varlen_old.load_state_dict(mom_varlen.state_dict())
-
-    o_varlen, _, aux_loss = mom_varlen(X, M0)
-
-    print("Output varlen shape:", o_varlen.shape)
-
-    o_naive, _, _ = naive_mom_module(X, M0)
-
-    print("Output naive shape:", o_naive.shape)
-
-    o_varlen_old, _, _ = mom_varlen_old(X, M0)
-
-    print("Output varlen old shape:", o_varlen_old.shape)
-
-    # Vérification de l'égalité des résultats
-    if torch.allclose(o_varlen, o_naive, atol=1e-5):
-        print("Les sorties varlen et naïve sont égales !")
-    else:
-        print("Les sorties varlen et naïve sont différentes.")
-        print("Différence max :", (o_varlen - o_naive).abs().max().item())
-
-    if torch.allclose(o_varlen, o_varlen_old, atol=1e-5):
-        print("Les sorties varlen et varlen old sont égales !")
-    else:
-        print("Les sorties varlen et varlen old sont différentes.")
-        print("Différence max :", (o_varlen - o_varlen_old).abs().max().item())
-
-    if torch.allclose(o_naive, o_varlen_old, atol=1e-5):
-        print("Les sorties naïve et varlen old sont égales !")
-    else:
-        print("Les sorties naïve et varlen old sont différentes.")
-        print("Différence max :", (o_naive - o_varlen_old).abs().max().item())
 

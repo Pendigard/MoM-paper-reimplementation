@@ -6,10 +6,14 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def linear_attn_varlen_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr, # Sans offset
-                s_ptr, M_0_ptr, # Avec offset
+def linear_attn_varlen_kernel(q_ptr, k_ptr, v_ptr, o_ptr, # Sans offset
+                s_ptr, M_0_ptr, alpha_ptr, m_id_ptr, t_ptr, b_ptr,
                 d : tl.constexpr, # hidden_dim de la mémoire
                 BN: tl.constexpr, # Taille du bloc de mémoire à traiter
+
+                num_memories : tl.constexpr,
+                batch_size : tl.constexpr,
+                seq_len : tl.constexpr
                 ):
     """
     @brief Kernel triton pour la linear attention avec séquences de longueurs variables
@@ -42,16 +46,25 @@ def linear_attn_varlen_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr, # Sans offset
     
     t = start
     while t < end:
-        kt = tl.load(k_ptr + t * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
-        vt = tl.load(v_ptr + t * d + j, mask=j_mask, other=0.0).to(tl.float32) # (BN,)
+        t_orig = tl.load(t_ptr + t).to(tl.int32)
+        b_orig = tl.load(b_ptr + t).to(tl.int32)
+        m_id = tl.load(m_id_ptr + t).to(tl.int32)
+        alpha = tl.load(alpha_ptr + t).to(tl.float32)
+
+        block_kv = t_orig * (batch_size * num_memories) + b_orig * num_memories + m_id
+
+        block_q = t_orig * batch_size + b_orig
+
+        kt = tl.load(k_ptr + block_kv * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
+        vt = tl.load(v_ptr + block_kv * d + j, mask=j_mask, other=0.0).to(tl.float32) # (BN,)
         # M += kt @ vt
         # Produit externe partiel
         M_cols = M_cols + kt[:, None] * vt[None, :]  # (d, BN)
-        tl.store(m_ptr + t * d * d + offs, M_cols.to(tl.float32), mask=mask)
+        # tl.store(m_ptr + t * d * d + offs, M_cols.to(tl.float32), mask=mask)
         # Calcul de o_t = q_t @ M
-        q_t = tl.load(q_ptr + t * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
-        o_cols = tl.sum(M_cols * q_t[:, None], axis=0)  # (BN,)
-        tl.store(o_ptr + t * d + j, o_cols.to(tl.float32), mask=j_mask)
+        q_t = tl.load(q_ptr + block_q * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
+        contrib = alpha * tl.sum(M_cols * q_t[:, None], axis=0)  # (BN,)
+        tl.atomic_add(o_ptr + block_q * d + j, contrib.to(tl.float32), mask=j_mask)
         t += 1
 
 @triton.jit
@@ -95,7 +108,8 @@ def linear_attn_varlen_backward_kernel(q_ptr, k_ptr, v_ptr, m_ptr, grad_o_ptr,
 
 class LinearAttentionVarlenTriton(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, v, s, M0):
+    def forward(ctx, q, k, v, 
+                s, M0, alpha, m_id, t_orig, b_orig):
         """
         @brief Wrapper pour le kernel triton de la linear attention avec varlen
         @param q : Query de taille (T_total, d)
@@ -111,56 +125,64 @@ class LinearAttentionVarlenTriton(torch.autograd.Function):
         v = v.contiguous()
         s = s.contiguous()
         M0 = M0.contiguous()
-        Tt, d = q.shape
+        alpha = alpha.contiguous()
+        m_id = m_id.contiguous()
+        t_orig = t_orig.contiguous()
+        b_orig = b_orig.contiguous()
+        seq_len, batch_size, num_memories, d = k.shape
         P = s.numel() - 1
         BN = 32
 
-        o = torch.empty_like(q)
-        m = torch.empty((Tt, d, d), device=q.device, dtype=q.dtype)
+        o = torch.zeros_like(q) # (T, batch_size, d)
+        # m = torch.empty((Tt, d, d), device=q.device, dtype=q.dtype)
 
         grid = (P, triton.cdiv(d, BN))
         linear_attn_varlen_kernel[grid](
-            q, k, v, o, m,
-            s, M0,
+            q, k, v, o,
+            s, M0, alpha, m_id, t_orig, b_orig,
             d=d,
             BN=BN,
+
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_memories=num_memories,
+
             num_warps=4
         )
 
-        ctx.s = s
+        # ctx.s = s
         # ctx.M0 = M0
-        ctx.save_for_backward(q, k, v, m)
-        return o, m
+        return o
 
-    @staticmethod
-    def backward(ctx, grad_o):
-        q, k, v, m = ctx.saved_tensors
-        s = ctx.s
-        _, d = q.shape
-        P = s.numel() - 1
-        BN = 32
+    # @staticmethod
+    # def backward(ctx, grad_o):
+    #     q, k, v, m = ctx.saved_tensors
+    #     s = ctx.s
+    #     _, d = q.shape
+    #     P = s.numel() - 1
+    #     BN = 32
 
-        grad_q = torch.empty_like(q)
-        grad_k = torch.empty_like(k)
-        grad_v = torch.empty_like(v)
+    #     grad_q = torch.empty_like(q)
+    #     grad_k = torch.empty_like(k)
+    #     grad_v = torch.empty_like(v)
 
-        grid = (P, triton.cdiv(d, BN))
-        linear_attn_varlen_backward_kernel[grid](
-            q, k, v, m, grad_o,
-            s,
-            grad_q, grad_k, grad_v,
-            d=d,
-            BN=BN,
-            num_warps=4
-        )
-        # On retourne les gradients dans l'ordre des entrées de la fonction forward
-        # None pour s et M0 car se ne sont pas des paramètres apprenables
-        return grad_q, grad_k, grad_v, None, None 
+    #     grid = (P, triton.cdiv(d, BN))
+    #     linear_attn_varlen_backward_kernel[grid](
+    #         q, k, v, m, grad_o,
+    #         s,
+    #         grad_q, grad_k, grad_v,
+    #         d=d,
+    #         BN=BN,
+    #         num_warps=4
+    #     )
+    #     # On retourne les gradients dans l'ordre des entrées de la fonction forward
+    #     # None pour s et M0 car se ne sont pas des paramètres apprenables
+    #     return grad_q, grad_k, grad_v, None, None 
 
-def linear_attn_varlen_triton(q, k, v, s, M0):
-    return LinearAttentionVarlenTriton.apply(q, k, v, s, M0)
+def linear_attn_varlen_triton(q, k, v, s, M0, alpha, m_id, t_orig, b_orig):
+    return LinearAttentionVarlenTriton.apply(q, k, v, s, M0, alpha, m_id, t_orig, b_orig)
 
-def linear_attn_varlen(q, k, v, s, M0):
+def linear_attn_varlen(q, k, v, s, M0, alpha, m_id, t_orig, b_orig):
     """
     @brief Implémentation naïve de la linear attention avec varlen. C'est une version de référence.
     @param q : Query de taille (T_total, d)
@@ -170,7 +192,7 @@ def linear_attn_varlen(q, k, v, s, M0):
     @param M0 : Mémoire initiale de taille (d, d)
     @return : Sortie de taille (T_total, d)
     """
-    _, d = q.shape
+    d = q.shape[-1]
     o = torch.zeros_like(q)
     M_total = []
 
@@ -181,13 +203,20 @@ def linear_attn_varlen(q, k, v, s, M0):
         M = M0.clone()
 
         for t in range(start, end):
-            kt = k[t].unsqueeze(-1)  # (d, 1)
-            vt = v[t].unsqueeze(0)   # (1, d)
+            seq_idx = t_orig[t].item()
+            batch_idx = b_orig[t].item()
+            mem_idx = m_id[t].item()
+            alpha_t = alpha[t].item()
+
+
+
+            kt = k[seq_idx, batch_idx, mem_idx].unsqueeze(-1)  # (d, 1)
+            vt = v[seq_idx, batch_idx, mem_idx].unsqueeze(0)   # (1, d)
             M = M + (kt @ vt)          # (d, d)
             M_total.append(M.clone())
-            o[t] = q[t] @ M  # (d,)
+            o[seq_idx, batch_idx] += alpha_t * (M.T @ q[seq_idx, batch_idx])  # (d,)
 
-    return o, torch.stack(M_total)
+    return o
 
 class LinearAttentionVarlenModule(nn.Module):
     def __init__(self, use_triton: bool = False):
@@ -198,8 +227,8 @@ class LinearAttentionVarlenModule(nn.Module):
         else:
             self.update_function = linear_attn_varlen
 
-    def forward(self, q : torch.Tensor, k : torch.Tensor, v : torch.Tensor, s : torch.Tensor, M_0 : torch.Tensor, *args) -> torch.Tensor:
-        return self.update_function(q, k, v, s, M_0)
+    def forward(self, q : torch.Tensor, k : torch.Tensor, v : torch.Tensor, M_0 : torch.Tensor, pack : Dict[str, torch.Tensor], *args) -> torch.Tensor:
+        return self.update_function(q, k, v, pack['s'], M_0, pack['alpha'], pack['m_id'], pack['t_orig'], pack['b_orig'])
 
 
 @triton.jit
