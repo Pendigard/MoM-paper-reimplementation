@@ -10,6 +10,7 @@ import glob
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 from transformers import AutoTokenizer
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,21 +32,20 @@ from src.module.transformer_pp import TransformerPP
 CONFIG = {
     "vocab_size": 32000,
     "dim": 256,
-    "num_layers": 4,
+    "num_layers": 8,         
     "num_memories": 4,
-    "hidden_dim": 256,
+    "hidden_dim": 256,         
     "top_k": 2,
     "seq_len": 512,
-    "batch_size": 4,
-    "lr": 3e-4, # de base 3e-4 j'ai baissé pour la reprise
-    "max_steps": 50000, 
-    "update_module": LinearAttention(),
-    "dataset_name": "cerebras/SlimPajama-627B",
-    "gradient_accumulation_steps": 8
+    "batch_size": 2,          
+    "gradient_accumulation_steps": 32,
+    "lr": 3e-4,                
+    "max_steps": 46000,       
+    "dataset_name": "cerebras/SlimPajama-627B"
 }
 
 def get_data_loader(tokenizer, config):
-    data_files = sorted(glob.glob("/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/*.jsonl.zst"))   
+    data_files = sorted(glob.glob("/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/*.jsonl"))  
     dataset = load_dataset("json", data_files=data_files, split="train", streaming=False)
     dataset = dataset.shuffle(seed=42)
 
@@ -80,7 +80,7 @@ def train(args):
             num_memories=CONFIG["num_memories"],
             k=CONFIG["top_k"],
             num_layers=CONFIG["num_layers"],
-            update_module=GDeltaAttention,
+            update_module=GLAAttention,
             update_module_args=(CONFIG["dim"], CONFIG["hidden_dim"], CONFIG["num_memories"])
         ).to(device)
     elif args.model == "retnet":
@@ -92,6 +92,7 @@ def train(args):
 
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["lr"])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CONFIG["max_steps"], eta_min=1e-5)
+    scaler = GradScaler()
     loss_history = []
 
     if args.checkpoint and os.path.exists(args.checkpoint):
@@ -130,31 +131,37 @@ def train(args):
         
         train_input = input_ids[:, :-1] 
         train_target = input_ids[:, 1:] 
-        
-        logits, aux_loss = model(train_input) 
-        
-        B, L, V = logits.shape
-        task_loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
-        
-        if isinstance(aux_loss, torch.Tensor) and aux_loss.item() != 0:
-            loss = task_loss + 0.01 * aux_loss
-        else:
-            loss = task_loss
-        
-        loss = loss / CONFIG["gradient_accumulation_steps"]
-        loss.backward()
-        
+
+        with autocast(device_type='cuda', dtype=torch.float16):
+            
+            logits, aux_loss = model(train_input) 
+            
+            B, L, V = logits.shape
+            task_loss = criterion(logits.reshape(B*L, V), train_target.reshape(-1))
+            
+            if isinstance(aux_loss, torch.Tensor) and aux_loss.item() != 0:
+                loss = task_loss + 0.01 * aux_loss
+            else:
+                loss = task_loss
+            
+            loss = loss / CONFIG["gradient_accumulation_steps"]
+        scaler.scale(loss).backward()    
+
         if (step + 1) % CONFIG["gradient_accumulation_steps"] == 0:
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
+            
+            scaler.step(optimizer)
+            scaler.update()
+            
             optimizer.zero_grad()
+            scheduler.step()
 
         loss_history.append(task_loss.item())
         pbar.set_description(f"Loss: {task_loss.item():.4f}")
         
         if (step + 1) % 5000 == 0:
-            save_path = f"{args.model}_gdelta_final_slimpajama_step{step+1}.pt"
+            save_path = f"{args.model}_gla_final_extended_slimpajama_step{step+1}.pt"
             
             checkpoint_content = {
                 "model_state_dict": model.state_dict(),
@@ -168,7 +175,7 @@ def train(args):
             torch.save(checkpoint_content, save_path)
             
             os.makedirs("results", exist_ok=True)
-            with open(f"results/loss_{args.model}_gdelta_history.json", "w") as f:
+            with open(f"results/loss_{args.model}_gla_extended_history.json", "w") as f:
                 json.dump(loss_history, f)
 
 if __name__ == "__main__":

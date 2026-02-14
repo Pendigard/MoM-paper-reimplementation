@@ -22,14 +22,14 @@ from src.module.mom_llm import MoMLLM
 CONFIG = {
     "vocab_size": 32000,
     "dim": 256,
-    "num_layers": 4,
+    "num_layers": 8,
     "num_memories": 4,
     "hidden_dim": 256,
     "top_k": 2,
     "seq_len": 512,
-    "batch_size": 4,
+    "batch_size": 2,
     "lr": 3e-4,
-    "max_steps": 50000,
+    "max_steps": 46000,
     "dataset_name": "cerebras/SlimPajama-627B",
 }
 
@@ -48,7 +48,8 @@ def get_model(model_name, device):
             num_memories=CONFIG["num_memories"],
             k=CONFIG["top_k"],
             num_layers=CONFIG["num_layers"],
-            update_module=update_layer
+            update_module=GLAAttention,
+            update_module_args=(CONFIG["dim"], CONFIG["hidden_dim"], CONFIG["num_memories"])
         ).to(device)
     elif model_name == "retnet":
         print("RetNet")
@@ -75,19 +76,16 @@ def calcul_perplexity(data_path, path, model_name, num_samples = 500):
         else :
             model.load_state_dict(checkpoint)
     except Exception as e : 
-        print (f"ERREUR FATALE lors du chargement : {e}")
         return
 
     model.eval()
 
-    print("Chargement du dataset")
-    dataset = load_dataset("json", data_files=data_path, split="train", streaming=False)
+=    dataset = load_dataset("json", data_files=data_path, split="train", streaming=False)
     dataset = dataset.shuffle(seed=42).select(range(num_samples))
 
     total_loss = 0
     total_token = 0
     criterion = nn.CrossEntropyLoss(reduction="sum", ignore_index=tokenizer.pad_token_id)
-    print("Calcul de la perplexité")
 
     with torch.no_grad():
         for i, exemple in enumerate(tqdm(dataset)):
@@ -128,12 +126,12 @@ def calcul_perplexity(data_path, path, model_name, num_samples = 500):
 if __name__ == "__main__":
 
     DATA_FILE = "/users/nfs/Vrac/21400184/Projet_deepl/MoM-paper-reimplementation/data/valid/example_train_1026.jsonl.zst"
-    # calcul_perplexity(
-    #     DATA_FILE,
-    #     path = "mom_gla__final_slimpajama_step100000.pt",
-    #     model_name = "mom",
-    #     num_samples = 500
-    # )
+    calcul_perplexity(
+        DATA_FILE,
+        path = "mom_gla_final_extended_slimpajama_step45000.pt",
+        model_name = "mom",
+        num_samples = 500
+    )
 
     # calcul_perplexity(
     #     DATA_FILE,
@@ -142,11 +140,11 @@ if __name__ == "__main__":
     #     num_samples = 500
     # )
 
-    calcul_perplexity(
-        DATA_FILE,
-        path = "retnet_gla__final_slimpajama_step100000.pt",
-        model_name = "retnet",
-        num_samples = 500
-    )
+    # calcul_perplexity(
+    #     DATA_FILE,
+    #     path = "retnet_gla__final_slimpajama_step100000.pt",
+    #     model_name = "retnet",
+    #     num_samples = 500
+    # )
 
 
