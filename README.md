@@ -33,3 +33,7 @@ Pour les expériences, nous avons utilisé des librairies tel que fla ou encore 
 
 Suite à la présentation, les examinateurs ont été surpris par les résultats obtenus sur MQAR. Après vérification, nous avons identifié une erreur critique dans le code de l’expérience : les labels envoyés par le dataloader étaient incorrects.
 Par conséquent, les résultats présentés sur le poster ne sont pas valides et ne doivent pas être pris en compte. L’erreur a été corrigée, mais les expériences n’ont pas encore été relancées.
+
+# Auteurs
+
+Célian Vasson, Antoine Théologien, Tudor Enache
