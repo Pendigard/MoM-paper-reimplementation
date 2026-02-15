@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class AttentionCore(nn.Module):
     def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
@@ -46,18 +47,37 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerLLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_heads: int, num_layers: int, dropout: float = 0.0, layer_norm=nn.LayerNorm):
+    def __init__(
+        self,
+        vocab_size: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_layers: int,
+        max_seq_len: int = 512,
+        dropout: float = 0.0,
+        layer_norm=nn.LayerNorm,
+        output_size=None
+    ):
         super().__init__()
         self.vocab_size = vocab_size
+        self.output_size = output_size if output_size is not None else vocab_size
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
+        self.max_seq_len = max_seq_len
+
         self.embedding = nn.Embedding(vocab_size, hidden_dim)
+
+        self.pos_embedding = nn.Embedding(max_seq_len, hidden_dim)
+
         self.blocks = nn.ModuleList(
-            [TransformerBlock(hidden_dim, num_heads, dropout=dropout, layer_norm=layer_norm) for _ in range(num_layers)]
+            [TransformerBlock(hidden_dim, num_heads, dropout=dropout, layer_norm=layer_norm)
+             for _ in range(num_layers)]
         )
+
         self.final_norm = layer_norm(hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, vocab_size, bias=False)
+        self.output_layer = nn.Linear(hidden_dim, self.output_size, bias=False)
+
         self.apply(self._init_weights)
 
     def _init_weights(self, module: nn.Module):
@@ -71,12 +91,32 @@ class TransformerLLM(nn.Module):
             torch.nn.init.zeros_(module.bias)
             torch.nn.init.ones_(module.weight)
 
-    def forward(self, input_ids: torch.Tensor, causal_mask: torch.Tensor = None, materialize_output: bool = True) -> torch.Tensor:
-        x = self.embedding(input_ids).transpose(0, 1)
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        causal_mask: torch.Tensor = None,
+        materialize_output: bool = True
+    ) -> torch.Tensor:
+
+        B, T = input_ids.shape
+        assert T <= self.max_seq_len, "Taille de séquence dépasse la max_seq_len"
+
+        tok = self.embedding(input_ids)
+
+        pos_ids = torch.arange(T, device=input_ids.device).unsqueeze(0)  # (1, T)
+        pos = self.pos_embedding(pos_ids)
+
+        x = tok + pos
+
+        x = x.transpose(0, 1)
+
         for block in self.blocks:
             x = block(x, attn_mask=causal_mask)
+
         x = self.final_norm(x)
+
         x = x.transpose(0, 1)
+
         if materialize_output:
             return self.output_layer(x), 0.0
         else:

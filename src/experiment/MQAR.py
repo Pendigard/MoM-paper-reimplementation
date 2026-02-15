@@ -65,7 +65,7 @@ class AssociativeRecallDataset(Dataset):
         for ti in target_idx:
             sequence.append(keys[ti])
             
-        x = torch.tensor(sequence[:-self.num_queries], dtype=torch.long)
+        x = torch.tensor(sequence, dtype=torch.long)
         y = torch.tensor([values[ti] for ti in target_idx], dtype=torch.long)
         return x, y
 
@@ -229,7 +229,8 @@ if __name__ == "__main__":
                     num_layers=num_layers,
                     mom_implem=nm.MoM,
                     layer_norm=nn.LayerNorm,
-                    update_module=update_module
+                    update_module=update_module,
+                    update_module_args = (mom_dim, mom_dim, num_memories)
                 )
 
                 model_mom, mom_losses, mom_val_accuracy, mom_test_loss, mom_test_accuracy = run_pipeline(
@@ -256,7 +257,8 @@ if __name__ == "__main__":
                     num_layers=num_layers,
                     mom_implem=nm.MoM,
                     layer_norm=nn.LayerNorm,
-                    update_module=update_module
+                    update_module=update_module,
+                    update_module_args = (mom_dim, mom_dim, num_memories)
                 )
 
                 model_hybrid, hybrid_losses, hybrid_val_accuracy, hybrid_test_loss, hybrid_test_accuracy = run_pipeline(

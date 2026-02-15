@@ -19,7 +19,12 @@ class MLP(nn.Module):
 
 
 class FLALLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_layers: int, layer : nn.Module, layer_norm = nn.LayerNorm, *args, **kwargs):
+    def __init__(self, 
+                 vocab_size: int, 
+                 hidden_dim: int, 
+                 num_layers: int, 
+                 layer : nn.Module, 
+                 layer_norm = nn.LayerNorm, *args, **kwargs):
         super().__init__()
         self.vocab_size = vocab_size
         self.hidden_dim = hidden_dim
@@ -95,7 +100,7 @@ if __name__ == "__main__":
         layer=GatedLinearAttention
     ).to(device)
 
-    input_ids = torch.randint(0, vocab_size, (2, 10)).to(device)  # (batch_size, seq_length)
+    input_ids = torch.randint(0, vocab_size, (2, 10)).to(device)
     outputs, aux_loss = model(input_ids)
-    print("Outputs shape:", outputs.shape)  # Expected: (2, 10, vocab_size)
+    print("Outputs shape:", outputs.shape)
     print("Auxiliary loss:", aux_loss)

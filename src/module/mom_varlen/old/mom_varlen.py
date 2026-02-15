@@ -5,11 +5,149 @@ import time
 import triton
 import triton.language as tl
 
+
+
 @triton.jit
-def linear_attn_varlen_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr, # Sans offset
-                s_ptr, M_0_ptr, # Avec offset
-                d : tl.constexpr, # hidden_dim de la mémoire
-                BN: tl.constexpr, # Taille du bloc de mémoire à traiter
+def gla_varlen_kernel(q_ptr, k_ptr, v_ptr, o_ptr, a_ptr,
+                s_ptr, M_0_ptr, 
+                d : tl.constexpr,
+                BN: tl.constexpr,
+                ):
+    """
+    @brief Kernel triton pour la GLA avec séquences de longueurs variables
+    @param q_ptr : Pointeur vers les query de taille (T_total, d)
+    @param k_ptr : Pointeur vers les key de taille (T_total, d)
+    @param v_ptr : Pointeur vers les value de taille (T_total, d)
+    @param o_ptr : Pointeur vers la sortie de taille (T_total, d)
+    @param s_ptr : Pointeur vers la séquence d'indices (num_seqs + 1,)
+    @param M_0_ptr : Pointeur vers la mémoire initiale de taille (d, d)
+    @param d : hidden_dim des mémoires
+    @param BN : Taille du bloc de mémoire à traiter
+    """
+    pid_p = tl.program_id(0) # Id p de la séquence
+    pid_j = tl.program_id(1) # Id j : quel bout de M_p on traite
+    j = pid_j * BN + tl.arange(0, BN) # Début du bloc de M (BN,)
+    j_mask = j < d # Masque pour ne pas dépasser la dimension de M
+    start = tl.load(s_ptr + pid_p).to(tl.int32) # Début de la séquence p
+    end = tl.load(s_ptr + pid_p + 1).to(tl.int32) # Fin de la séquence p
+    # M_cols = tl.zeros((d, BN), dtype=tl.float32)
+    i = tl.arange(0, d) # (d,)
+
+    # [None, :] : ajoute une dimension à l'indice 0 (unsqueeze(0))
+    # [:, None] : ajoute une dimension à l'indice 1 (unsqueeze(1))
+    offs = i[:, None] * d + j[None, :] # (d, BN)
+
+    # Masque pour la sauvegarde m à chaque étape, on s'assure que les colonnes ne dépassent pas d
+    # Pas besoin de masque pour les lignes car i < d toujours
+    mask = j_mask[None, :] # (1, BN)       
+    M_cols = tl.load(M_0_ptr + offs, mask=mask, other=0.0).to(tl.float32)  # (d, BN)
+    
+    t = start
+    while t < end:
+        kt = tl.load(k_ptr + t * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
+        vt = tl.load(v_ptr + t * d + j, mask=j_mask, other=0.0).to(tl.float32) # (BN,)
+        at = tl.load(a_ptr + t * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
+        # M = (a_t @ one_col) * M + (kt @ vt)
+        M_cols = at[:, None] * M_cols + (kt[:, None] * vt[None, :])          # (d, BN)
+        # Calcul de o_t = q_t @ M
+        q_t = tl.load(q_ptr + t * d + i, mask=True, other=0.0).to(tl.float32) # (d,)
+        o_cols = tl.sum(M_cols * q_t[:, None], axis=0)  # (BN,)
+        tl.store(o_ptr + t * d + j, o_cols.to(tl.float32), mask=j_mask)
+        t += 1
+
+
+class GLAVarlenTriton(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, s, M0, a):
+        """
+        @brief Wrapper pour le kernel triton de la GLA avec varlen
+        @param q : Query de taille (T_total, d)
+        @param k : Key de taille (T_total, d)
+        @param v : Value de taille (T_total, d)
+        @param s : Séquence d'indices de taille (num_seqs + 1,)
+        @param M0 : Mémoire initiale de taille (d, d)
+        @param a : Decay de taille (T_total, d)
+        @return : Sortie de taille (T_total, d)
+        """
+        # q,k,v: (Tt, d) CUDA contiguous
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        s = s.contiguous()
+        M0 = M0.contiguous()
+        a = a.contiguous()
+    
+        Tt, d = q.shape
+        P = s.numel() - 1
+        BN = 32
+
+        o = torch.empty_like(q)
+
+        grid = (P, triton.cdiv(d, BN))
+        gla_varlen_kernel[grid](
+            q, k, v, o, a,
+            s, M0,
+            d=d,
+            BN=BN,
+            num_warps=4
+        )
+        return o
+
+def GLA_varlen_triton(q, k, v, s, M0, a):
+    return GLAVarlenTriton.apply(q, k, v, s, M0, a)
+
+
+def GLA_varlen(q, k, v, s, M0, a):
+    """
+    @brief Implémentation naïve de la GLA avec varlen. C'est une version de référence.
+    @param q : Query de taille (T_total, d)
+    @param k : Key de taille (T_total, d)
+    @param v : Value de taille (T_total, d)
+    @param s : Séquence d'indices de taille (num_seqs + 1,)
+    @param M0 : Mémoire initiale de taille (d, d)
+    @param a : Decay de taille (T_total, d)
+    @return : Sortie de taille (T_total, d)
+    """
+    _, d = q.shape
+    o = torch.zeros_like(q)
+    M_total = []
+
+    for p in range(len(s) - 1):
+        start = s[p].item()
+        end = s[p + 1].item()
+
+        M = M0.clone()
+
+        for t in range(start, end):
+            kt = k[t].unsqueeze(-1)  # (d, 1)
+            vt = v[t].unsqueeze(0)   # (1, d)
+            at = a[t].unsqueeze(-1)  # (d, 1)
+            M = at * M + (kt @ vt) # (d, d)
+            M_total.append(M.clone())
+            o[t] = q[t] @ M  # (d,)
+
+    return o, torch.stack(M_total)
+
+class GLAVarlenModule(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, use_triton: bool = False):
+        super().__init__()
+        self.use_triton = use_triton
+        self.W_a = nn.Linear(input_dim, hidden_dim)
+        if self.use_triton:
+            self.update_function = GLA_varlen_triton
+        else:
+            self.update_function = GLA_varlen
+
+    def forward(self, q : torch.Tensor, k : torch.Tensor, v : torch.Tensor, s : torch.Tensor, M_0 : torch.Tensor, x_tilde : torch.Tensor) -> torch.Tensor:
+        a = self.W_a(x_tilde)  # (N, d)
+        a = torch.sigmoid(a)  # (N, d)
+        return self.update_function(q, k, v, s, M_0, a)
+
+@triton.jit
+def linear_attn_varlen_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr,
+                s_ptr, M_0_ptr,
+                d : tl.constexpr,
+                BN: tl.constexpr,
                 ):
     """
     @brief Kernel triton pour la linear attention avec séquences de longueurs variables
@@ -215,13 +353,6 @@ def first_idx(tensor: torch.Tensor) -> torch.Tensor:
 
 class MoM(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, num_memories: int, k: int, update_module: nn.Module = None, update_module_args: tuple = (), *args, **kwargs):
-        """
-        @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation varlen optimisée avec triton.
-        @param input_dim: Dimension de l'entrée x.
-        @param hidden_dim: Dimension de chaque mémoire M_t.
-        @param num_memories: Nombre de mémoires (Ça ne prend pas en compte la mémoire partagée).
-        @param k: Hyperparamètre k pour la sélection des top-k mémoires.
-        """
         super().__init__(*args, **kwargs)
 
         self.num_memories = num_memories          # locals only
@@ -357,4 +488,4 @@ class MoM(nn.Module):
             accumulate=True
         )
 
-        return o, o_tilde, aux_loss / T
+        return o, _, aux_loss / T

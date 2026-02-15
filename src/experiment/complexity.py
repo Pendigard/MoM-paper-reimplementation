@@ -20,9 +20,9 @@ CONFIG = {
     "top_k": 2,
     "batch_size": 2,
     "num_heads": 8,
-    "warmup": 100,
-    "iters": 100,
-    "context_lengths": [1024, 2048, 4096, 8192],
+    "warmup": 10,
+    "iters": 10,
+    "context_lengths": [1024, 2048, 4096, 8192, 16384, 32768],
     "update_module": umv.LinearAttentionVarlenModule, # umv.LinearAttentionVarlenModule(use_triton=True, no_grad=True), # 
     "update_module_args": (True,) # (True,) for triton, (False,) for pure PyTorch
 }
@@ -56,14 +56,14 @@ def plot_series(
             linewidth=2
         )
 
-    plt.xlabel("Context Length")
+    plt.xlabel("Longueur de la séquence (tokens)")
     plt.ylabel(ylabel)
     plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
 
-    plt.savefig(outpath)
+    plt.savefig(outpath, dpi=300)
     plt.show()
 
 
@@ -83,10 +83,7 @@ def benchmark_model(
     
 
     for T in context_lengths:
-        begin = torch.cuda.memory_allocated(device=device) / (1024**2)
         input_ids = torch.randint(0, vocab_size, (batch_size, T), device=device)
-        end = torch.cuda.memory_allocated(device=device) / (1024**2)
-        print(f"Input IDs allocation for T={T}: {end - begin:.2f} MB")
         mask = causal_mask_triu_bool(T, device)
 
         fn = forward_fn_factory(input_ids, mask)
@@ -194,7 +191,7 @@ if __name__ == "__main__":
     plot_series(
         context_lengths,
         {"TransformerLLM": times_transformer, "MoMLLM": times_mom},
-        "Forward Pass Time vs Context Length",
-        "Time per Forward Pass (ms)",
+        "Temps d'un forward pass en fonction de la longueur de la séquence",
+        "Temps par forward pass (ms)",
         "forward_pass_time_comparison.png",
     )

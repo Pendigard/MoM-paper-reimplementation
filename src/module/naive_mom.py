@@ -82,7 +82,13 @@ class GDeltaAttention(nn.Module):
 
 
 class MoM(nn.Module):
-    def __init__(self, input_dim : int, hidden_dim : int, num_memories : int, k : int, update_module: nn.Module = None, update_module_args: tuple = (), *args, **kwargs):
+    def __init__(self, 
+                 input_dim : int, 
+                 hidden_dim : int, 
+                 num_memories : int, 
+                 k : int, 
+                 update_module: nn.Module = None, 
+                 update_module_args: tuple = (), *args, **kwargs):
         """
         @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation naïve, utilisé au début du projet.
         @param input_dim: Dimension de l'entrée x.
@@ -107,10 +113,9 @@ class MoM(nn.Module):
 
         self.softmax = nn.Softmax(dim=-1)
 
-    def get_scores_and_indices(self, X : torch.Tensor, M_0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_scores_and_indices(self, X : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         @brief Calcule les scores d'attention et les états des mémoires pour chaque entrée.
-        @param M_0: État initiale des mémoires de forme (hidden_dim, hidden_dim).
         @param X: Entrée de forme (seq_len, batch_size, input_dim)
         @return: Les scores d'attention et les états des mémoires. (seq_len, batch_size, num_memories), (batch_size, num_memories + 1, hidden_dim, hidden_dim)
         """
@@ -176,12 +181,6 @@ class MoM(nn.Module):
     
 class MoMRef(MoM):
     def forward(self, X : torch.Tensor, M_0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        @brief passe-avant du module MoM en version naïve.
-        @param M_0: État initiale des mémoires de forme (hidden_dim, hidden_dim).
-        @param X: Entrée de forme (seq_len, batch_size, input_dim)
-        @return: Les outputs et l'état final des mémoires. (seq_len, batch_size, hidden_dim), (batch_size, num_memories + 1, hidden_dim, hidden_dim)
-        """
         batch_size = X.shape[1]
         M_t = M_0.expand(batch_size, self.num_memories + 1, self.hidden_dim, self.hidden_dim)
         outputs = []

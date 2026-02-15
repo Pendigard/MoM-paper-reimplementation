@@ -6,7 +6,11 @@ from src.module.llm import TransformerBlock
 from typing import Callable
 
 class MLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, activation: nn.Module = nn.ReLU(), *args, **kwargs):
+    def __init__(self, 
+                 input_dim: int, 
+                 hidden_dim: int, 
+                 output_dim: int, 
+                 activation: nn.Module = nn.ReLU()):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.activation = activation
@@ -20,7 +24,17 @@ class MLP(nn.Module):
 
 
 class MoMLLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, update_module_args: tuple = (), output_size: int = None, *args, **kwargs):
+    def __init__(self, 
+                 vocab_size: int,
+                 hidden_dim: int, 
+                 num_memories: int, 
+                 k: int, 
+                 num_layers: int, 
+                 mom_implem = naive_mom.MoM, 
+                 layer_norm = nn.LayerNorm, 
+                 update_module : nn.Module = None, 
+                 update_module_args: tuple = (), 
+                 output_size: int = None):
         super().__init__()
         self.vocab_size = vocab_size
         self.output_size = output_size if output_size is not None else vocab_size
@@ -145,7 +159,7 @@ class MoMLLM(nn.Module):
 
 
 class MoMHybridLLM(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, output_size: int = None, *args, **kwargs):
+    def __init__(self, vocab_size: int, hidden_dim: int, num_memories: int, k: int, num_layers: int, mom_implem = naive_mom.MoM, layer_norm = nn.LayerNorm, update_module : nn.Module = None, output_size: int = None, update_module_args = (), *args, **kwargs):
         super().__init__()
         self.vocab_size = vocab_size
         self.output_size = output_size if output_size is not None else vocab_size
@@ -163,7 +177,8 @@ class MoMHybridLLM(nn.Module):
                 hidden_dim=hidden_dim, 
                 num_memories=num_memories, 
                 k=k,
-                update_module=update_module
+                update_module=update_module,
+                update_module_args=update_module_args
             ) for _ in range(num_layers - 1)
         ])
 

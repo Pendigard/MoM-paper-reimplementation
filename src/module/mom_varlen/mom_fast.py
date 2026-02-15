@@ -11,7 +11,7 @@ import src.module.mom_varlen as mvo
 
 def first_idx(tensor: torch.Tensor) -> torch.Tensor:
     """
-    @brief Renvoie les indices des premiers éléments de chaque séquence dans un tenseur trié
+    @brief: Renvoie les indices des premiers éléments de chaque séquence dans un tenseur trié
     @param tensor : Tensor trié de taille (N,)
     @return : Tensor de taille (P,) contenant les indices des premiers éléments de chaque séquence
     """
@@ -22,13 +22,6 @@ def first_idx(tensor: torch.Tensor) -> torch.Tensor:
 
 class MoM(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, num_memories: int, k: int, update_module: nn.Module = None, update_module_args: tuple = (), *args, **kwargs):
-        """
-        @brief Module de mixture de mémoires (Mixture of Memories). Il s'agit d'une implémentation varlen optimisée avec triton.
-        @param input_dim: Dimension de l'entrée x.
-        @param hidden_dim: Dimension de chaque mémoire M_t.
-        @param num_memories: Nombre de mémoires (Ça ne prend pas en compte la mémoire partagée).
-        @param k: Hyperparamètre k pour la sélection des top-k mémoires.
-        """
         super().__init__(*args, **kwargs)
 
         self.num_memories = num_memories          # locals only
@@ -46,18 +39,6 @@ class MoM(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def build_varlen_pack(self, indices: torch.Tensor, scores: torch.Tensor, T : int, B : int, device: torch.device) -> Dict[str, torch.Tensor]:
-        """
-        @brief Réorganise le batch X pour le kernel varlen
-        @param X : Batch d'entrée de taille (seq_len, batch_size, dim)
-        @param indices : Indices des mémoires sélectionnées de taille (seq_len, batch_size, K)
-        @param scores : Scores d'attention associés aux mémoires sélectionnées de taille (seq_len, batch_size, K)
-        @return Dictionnaire contenant :
-            - 'x_tilde' : Tensor de taille (N, D) avec N = L*B*K, les vecteurs d'entrée réorganisés
-            - 't_orig' : Tensor de taille (N,) contenant les indices de la séquence d'origine pour chaque vecteur dans x_tilde
-            - 'b_orig' : Tensor de taille (N,) contenant les indices de batch d'origine pour chaque vecteur dans x_tilde
-            - 'm_id' : Tensor de taille (N,) contenant les indices de mémoire associés à chaque vecteur dans x_tilde
-            - 'alpha' : Tensor de taille (N,) contenant les poids de chaque mémoire dans x_tilde
-        """
         assert indices.shape[0] == T and indices.shape[1] == B
         K = indices.shape[2]
         dtype_idx = torch.int
@@ -107,14 +88,6 @@ class MoM(nn.Module):
         X: torch.Tensor, # (T, B, Din)
         M0: torch.Tensor, # (B, M+1, d, d)
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
-        """
-        @brief passe-avant du module MoM en version varlen.
-        @param X: Entrée de forme (seq_len, batch_size, input_dim)
-        @param M0: État initiale des mémoires de forme (hidden_dim, hidden_dim).
-        @param update_function: Fonction de mise à jour des mémoires avec varlen.
-        @return: Les outputs de forme (seq_len, batch_size, hidden_dim)
-        """
-
         T, B, _ = X.shape
 
         scores = self.W_g(X)  # (T, B, M)
