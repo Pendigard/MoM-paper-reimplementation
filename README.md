@@ -25,7 +25,9 @@ Il reste un problème pour ces deux implémentation c'est qu'on calcule à l'ava
 
 - Nous avons implémenté les updates en naive pour la **linear attention**, le **retnet**, le **GLA** et **G-deltanet**. 
 
-- Nous avons implémenté les updates en triton pour la **linear attention** (backward et forward), le **GLA** (forward seulement)
+- Nous avons implémenté les updates en triton pour la **linear attention** (backward et forward), le **GLA** (forward uniquement)
+
+Pour les expériences, nous avons utilisé des librairies tel que fla ou encore transformers avec les implémentations llama pour les baselines.
 
 # Erreur critique MQAR
 
